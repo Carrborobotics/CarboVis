@@ -1,0 +1,248 @@
+diff --git a/src/main/java/frc/robot/Robot.java b/src/main/java/frc/robot/Robot.java
+index 22f88cb..5edc108 100644
+--- a/src/main/java/frc/robot/Robot.java
++++ b/src/main/java/frc/robot/Robot.java
+@@ -30,6 +30,7 @@ import edu.wpi.first.math.geometry.Rotation3d;
+ import edu.wpi.first.wpilibj.DriverStation;
+ import edu.wpi.first.wpilibj.Filesystem;
+ import edu.wpi.first.wpilibj.GenericHID.RumbleType;
++import edu.wpi.first.wpilibj.PowerDistribution;
+ import edu.wpi.first.wpilibj.TimedRobot;
+ import edu.wpi.first.wpilibj.Timer;
+ import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
+@@ -58,6 +59,7 @@ import frc.robot.subsystems.Flywheel;
+ import frc.robot.subsystems.Health;
+ import frc.robot.subsystems.Hood;
+ import frc.robot.subsystems.MechanismSim;
++import frc.robot.subsystems.MotorTelemetry;
+ import frc.robot.subsystems.Rack;
+ import frc.robot.subsystems.Roller;
+ import frc.robot.subsystems.SwerveDrive;
+@@ -102,6 +104,7 @@ public class Robot extends TimedRobot {
+     private double lastHubChangeInS = Double.POSITIVE_INFINITY;
+     private double nextHealthCheckS = 0;
+     private double nextSimBallS = 0;
++    private double lastLoopS = Double.NaN;
+ 
+     // Dashboard keys (Elastic reads these; see elastic-layout.json).
+     private static final String TILT_TOGGLE = "Driver/Tilt Compensation";
+@@ -113,6 +116,13 @@ public class Robot extends TimedRobot {
+ 
+     public Robot() {
+         DogLog.setOptions(new DogLogOptions().withCaptureDs(true).withNtPublish(true));
++        // PDH per-channel currents, total current/power and temperature go into DogLog's SystemStats/.
++        // Auto-detects a REV PDH (CAN 1) or CTRE PDP (CAN 0); if neither answers, telemetry just goes without it.
++        try {
++            DogLog.setPdh(new PowerDistribution());
++        } catch (RuntimeException e) {
++            DriverStation.reportWarning("No power distribution hub found for logging: " + e.getMessage(), false);
++        }
+ 
+         registerNamedCommands(); // must happen before autos are loaded
+         autoChooser = AutoBuilder.buildAutoChooser();
+@@ -255,6 +265,8 @@ public class Robot extends TimedRobot {
+     public void robotPeriodic() {
+         CommandScheduler.getInstance().run(); // drivetrain odometry, auto commands, button bindings
+         double now = Timer.getFPGATimestamp();
++        if (!Double.isNaN(lastLoopS)) DogLog.log("System/LoopTimeMs", (now - lastLoopS) * 1000.0, "ms");
++        lastLoopS = now;
+         Tuning.update();
+         vision.addMeasurements(drive::addVisionMeasurement);
+ 
+@@ -280,6 +292,7 @@ public class Robot extends TimedRobot {
+             publishHealth();
+         }
+         log(shot, hub, now);
++        MotorTelemetry.update();
+     }
+ 
+     private void apply(Setpoints sp) {
+diff --git a/src/main/java/frc/robot/subsystems/CtreSwerve.java b/src/main/java/frc/robot/subsystems/CtreSwerve.java
+index 5bf17cc..fc00a05 100644
+--- a/src/main/java/frc/robot/subsystems/CtreSwerve.java
++++ b/src/main/java/frc/robot/subsystems/CtreSwerve.java
+@@ -117,6 +117,8 @@ public final class CtreSwerve extends SubsystemBase implements SwerveDrive {
+             String name = Drive.MODULES[i].name();
+             Health.register(name + " drive (" + Drive.MODULES[i].driveId() + ")", module.getDriveMotor());
+             Health.register(name + " steer (" + Drive.MODULES[i].steerId() + ")", module.getSteerMotor());
++            MotorTelemetry.register(name + " drive", Drive.MODULES[i].driveId(), CAN.DRIVETRAIN, module.getDriveMotor(), driveInitial);
++            MotorTelemetry.register(name + " steer", Drive.MODULES[i].steerId(), CAN.DRIVETRAIN, module.getSteerMotor(), steerInitial);
+             Health.register(name + " CANcoder (" + Drive.MODULES[i].cancoderId() + ")", module.getEncoder());
+         }
+         Health.register("Pigeon (" + CAN.PIGEON + ")", drivetrain.getPigeon2());
+diff --git a/src/main/java/frc/robot/subsystems/Hood.java b/src/main/java/frc/robot/subsystems/Hood.java
+index de4319c..be6f275 100644
+--- a/src/main/java/frc/robot/subsystems/Hood.java
++++ b/src/main/java/frc/robot/subsystems/Hood.java
+@@ -62,5 +62,8 @@ public final class Hood {
+         DogLog.log("Hood/GoalUnits", goalUnits);
+         DogLog.log("Hood/Units", units());
+         DogLog.log("Hood/StatorAmps", statorAmps());
++        // Match Logs app: Mechanisms tab and 3D view joints (legacy hood units, see Constants.Hood)
++        DogLog.log("Mechanisms/Hood/Position", units(), "hood units");
++        DogLog.log("Mechanisms/Hood/Setpoint", goalUnits, "hood units");
+     }
+ }
+diff --git a/src/main/java/frc/robot/subsystems/MotorTelemetry.java b/src/main/java/frc/robot/subsystems/MotorTelemetry.java
+new file mode 100644
+index 0000000..47b7423
+--- /dev/null
++++ b/src/main/java/frc/robot/subsystems/MotorTelemetry.java
+@@ -0,0 +1,119 @@
++package frc.robot.subsystems;
++
++import java.util.ArrayList;
++import java.util.List;
++
++import com.ctre.phoenix6.BaseStatusSignal;
++import com.ctre.phoenix6.CANBus;
++import com.ctre.phoenix6.StatusSignal;
++import com.ctre.phoenix6.configs.TalonFXConfiguration;
++import com.ctre.phoenix6.hardware.TalonFX;
++
++import dev.doglog.DogLog;
++
++/**
++ * Per-motor health telemetry for the 7763 Match Logs app (log files and the live view).
++ *
++ * <p>Every TalonFX made by {@link Talons#create} registers itself here (CtreSwerve registers its own).
++ * Each loop {@link #update()} logs, through DogLog (so it reaches both the .wpilog and NetworkTables):
++ *
++ * <pre>
++ *   Motors/&lt;name&gt;/TempC, SupplyCurrentA, StatorCurrentA, BusVoltageV, DutyCycle, VelocityRPM, Connected
++ *   Motors/&lt;name&gt;/Faults/&lt;flag&gt;       live (non-sticky) fault flags, refreshed at 10 Hz
++ *   Motors/&lt;name&gt;/CANId, CANBus, Controller, SupplyLimitA, StatorLimitA   logged once
++ * </pre>
++ *
++ * The app finds motors by these names, so keep the "Motors/" layout. Nothing here changes a status
++ * signal's update rate: it reads whatever the motors already send.
++ */
++public final class MotorTelemetry {
++    private MotorTelemetry() {}
++
++    /** Problems and "being limited" flags. Limit switches / soft limits are left out (normal operation). */
++    private static final String[] FAULT_NAMES = {
++        "Hardware", "ProcTemp", "DeviceTemp", "Undervoltage", "BootDuringEnable", "BridgeBrownout",
++        "OverSupplyV", "UnstableSupplyV", "StatorCurrLimit", "SupplyCurrLimit", "RemoteSensorDataInvalid",
++        "UnlicensedFeatureInUse",
++    };
++    private static final int FAULT_EVERY_N_LOOPS = 5; // 50 Hz loop -> faults at 10 Hz
++
++    private static final class Motor {
++        final String key;
++        final TalonFX motor;
++        final StatusSignal<?> temp, supply, stator, bus, duty, rotorVel;
++        final BaseStatusSignal[] fast;
++        final List<StatusSignal<Boolean>> faults;
++        final BaseStatusSignal[] faultArray;
++        final int canId;
++        final String canBus;
++        final double supplyLimitA, statorLimitA;
++        boolean staticLogged = false;
++
++        Motor(String name, int canId, CANBus bus, TalonFX motor, double supplyLimitA, double statorLimitA) {
++            this.key = "Motors/" + name + "/";
++            this.motor = motor;
++            this.canId = canId;
++            this.canBus = bus == null ? "" : bus.getName();
++            this.supplyLimitA = supplyLimitA;
++            this.statorLimitA = statorLimitA;
++            temp = motor.getDeviceTemp();
++            supply = motor.getSupplyCurrent();
++            stator = motor.getStatorCurrent();
++            this.bus = motor.getSupplyVoltage();
++            duty = motor.getDutyCycle();
++            rotorVel = motor.getRotorVelocity();
++            fast = new BaseStatusSignal[] {temp, supply, stator, this.bus, duty, rotorVel};
++            faults = List.of(
++                    motor.getFault_Hardware(), motor.getFault_ProcTemp(), motor.getFault_DeviceTemp(),
++                    motor.getFault_Undervoltage(), motor.getFault_BootDuringEnable(), motor.getFault_BridgeBrownout(),
++                    motor.getFault_OverSupplyV(), motor.getFault_UnstableSupplyV(), motor.getFault_StatorCurrLimit(),
++                    motor.getFault_SupplyCurrLimit(), motor.getFault_RemoteSensorDataInvalid(),
++                    motor.getFault_UnlicensedFeatureInUse());
++            faultArray = faults.toArray(BaseStatusSignal[]::new);
++        }
++    }
++
++    private static final List<Motor> MOTORS = new ArrayList<>();
++    private static long loops = 0;
++
++    /** Register a motor. cfg may be null; its enabled current limits are logged so the app can show them. */
++    public static void register(String name, int canId, CANBus bus, TalonFX motor, TalonFXConfiguration cfg) {
++        double supply = Double.NaN, stator = Double.NaN;
++        if (cfg != null) {
++            if (cfg.CurrentLimits.SupplyCurrentLimitEnable) supply = cfg.CurrentLimits.SupplyCurrentLimit;
++            if (cfg.CurrentLimits.StatorCurrentLimitEnable) stator = cfg.CurrentLimits.StatorCurrentLimit;
++        }
++        MOTORS.add(new Motor(name, canId, bus, motor, supply, stator));
++    }
++
++    /** Call once per loop from robotPeriodic. Non-blocking: reads the newest frames that have arrived. */
++    public static void update() {
++        boolean doFaults = (loops++ % FAULT_EVERY_N_LOOPS) == 0;
++        for (Motor m : MOTORS) {
++            if (!m.staticLogged) {
++                DogLog.log(m.key + "CANId", (long) m.canId);
++                DogLog.log(m.key + "CANBus", m.canBus);
++                DogLog.log(m.key + "Controller", "TalonFX");
++                if (!Double.isNaN(m.supplyLimitA)) DogLog.log(m.key + "SupplyLimitA", m.supplyLimitA, "A");
++                if (!Double.isNaN(m.statorLimitA)) DogLog.log(m.key + "StatorLimitA", m.statorLimitA, "A");
++                m.staticLogged = true;
++            }
++            boolean connected = m.motor.isConnected();
++            DogLog.log(m.key + "Connected", connected);
++            if (!connected) continue; // the last values would be stale; don't log them as new
++            BaseStatusSignal.refreshAll(m.fast);
++            DogLog.log(m.key + "TempC", m.temp.getValueAsDouble(), "degC");
++            DogLog.log(m.key + "SupplyCurrentA", m.supply.getValueAsDouble(), "A");
++            DogLog.log(m.key + "StatorCurrentA", m.stator.getValueAsDouble(), "A");
++            DogLog.log(m.key + "BusVoltageV", m.bus.getValueAsDouble(), "V");
++            DogLog.log(m.key + "DutyCycle", m.duty.getValueAsDouble());
++            DogLog.log(m.key + "VelocityRPM", m.rotorVel.getValueAsDouble() * 60.0, "rpm");
++            if (doFaults) {
++                BaseStatusSignal.refreshAll(m.faultArray);
++                for (int i = 0; i < FAULT_NAMES.length; i++) {
++                    DogLog.log(m.key + "Faults/" + FAULT_NAMES[i], Boolean.TRUE.equals(m.faults.get(i).getValue()));
++                }
++            }
++        }
++    }
++}
+diff --git a/src/main/java/frc/robot/subsystems/Rack.java b/src/main/java/frc/robot/subsystems/Rack.java
+index fd3b6c7..ecc5398 100644
+--- a/src/main/java/frc/robot/subsystems/Rack.java
++++ b/src/main/java/frc/robot/subsystems/Rack.java
+@@ -43,5 +43,8 @@ public final class Rack {
+         DogLog.log("Rack/RotA", a.getPosition().getValueAsDouble());
+         DogLog.log("Rack/RotB", b.getPosition().getValueAsDouble());
+         DogLog.log("Rack/StatorAmpsA", a.getStatorCurrent().getValueAsDouble());
++        // Match Logs app: Mechanisms tab and 3D view joints (motor rotations, 0 = retracted)
++        DogLog.log("Mechanisms/Rack/Position", a.getPosition().getValueAsDouble(), "rot");
++        DogLog.log("Mechanisms/Rack/Setpoint", goalRot, "rot");
+     }
+ }
+diff --git a/src/main/java/frc/robot/subsystems/Talons.java b/src/main/java/frc/robot/subsystems/Talons.java
+index 8928905..1400d51 100644
+--- a/src/main/java/frc/robot/subsystems/Talons.java
++++ b/src/main/java/frc/robot/subsystems/Talons.java
+@@ -35,6 +35,7 @@ final class Talons {
+             DriverStation.reportError(name + " (TalonFX " + id + ") config failed: " + status, false);
+         }
+         Health.register(name + " (" + id + ")", motor);
++        MotorTelemetry.register(name, id, bus, motor, cfg);
+         return motor;
+     }
+ }
+diff --git a/src/main/java/frc/robot/subsystems/Turret.java b/src/main/java/frc/robot/subsystems/Turret.java
+index 0b6c4e2..04f428d 100644
+--- a/src/main/java/frc/robot/subsystems/Turret.java
++++ b/src/main/java/frc/robot/subsystems/Turret.java
+@@ -47,5 +47,8 @@ public final class Turret {
+         DogLog.log("Turret/GoalDeg", goalDeg);
+         DogLog.log("Turret/Deg", degrees());
+         DogLog.log("Turret/StatorAmps", motor.getStatorCurrent().getValueAsDouble());
++        // Match Logs app: Mechanisms tab and 3D view joints
++        DogLog.log("Mechanisms/Turret/Position", degrees(), "deg");
++        DogLog.log("Mechanisms/Turret/Setpoint", goalDeg, "deg");
+     }
+ }
