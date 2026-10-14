@@ -16,6 +16,33 @@ const Sample = (() => {
     };
   }
 
+  // Rough 2026 field AprilTags for the made-up cameras (sample log and simulated match): [id, x m, y m, facing°].
+  // One tag on each face of both hubs and four on each alliance wall. Not the official layout.
+  const FIELD_TAGS = [
+    [2, 11.31, 4.03, 180], [3, 11.9, 4.63, 90], [4, 12.49, 4.03, 0], [5, 11.9, 3.43, -90],
+    [18, 5.19, 4.03, 0], [19, 4.6, 4.63, 90], [20, 4.01, 4.03, 180], [21, 4.6, 3.43, -90],
+    [13, 16.52, 0.65, 180], [14, 16.52, 3.4, 180], [15, 16.52, 4.67, 180], [16, 16.52, 7.4, 180],
+    [29, 0.02, 0.65, 0], [30, 0.02, 3.4, 0], [31, 0.02, 4.67, 0], [32, 0.02, 7.4, 0],
+  ];
+  // Camera mounts, as the robot logs them in Vision/<cam>/RobotToCamera: [x fwd m, y left m, z m, roll°, pitch°, yaw°]
+  const CAM_MOUNTS = { FrontLeft: [0.27, 0.27, 0.22, 0, -20, 30], BackRight: [-0.27, -0.27, 0.22, 0, -20, -150] };
+  // Tags a camera on a robot at (x, y, heading rad) can see, nearest first: [{ id, yaw° (+ = left), dist m }]
+  function tagsSeen(rx, ry, rh, mount, fovDeg = 70, maxM = 6) {
+    const c = Math.cos(rh), s = Math.sin(rh);
+    const cx = rx + c * mount[0] - s * mount[1], cy = ry + s * mount[0] + c * mount[1], ch = rh + mount[5] * Math.PI / 180;
+    const out = [];
+    for (const [id, tx, ty, f] of FIELD_TAGS) {
+      const dx = tx - cx, dy = ty - cy, d = Math.hypot(dx, dy);
+      if (d > maxM || d < 0.3) continue;
+      let b = Math.atan2(dy, dx) - ch; b = Math.atan2(Math.sin(b), Math.cos(b)) * 180 / Math.PI;
+      if (Math.abs(b) > fovDeg / 2) continue;
+      const fr = f * Math.PI / 180;
+      if ((-dx * Math.cos(fr) - dy * Math.sin(fr)) / d < 0.3) continue; // seen from behind or nearly edge-on
+      out.push({ id, yaw: b, dist: d });
+    }
+    return out.sort((a, b) => a.dist - b.dist);
+  }
+
   function generate() {
     const R = rng(7763);
     const W = new Core.Writer('Carrborobotics 7763 sample (synthetic)');
@@ -49,7 +76,10 @@ const Sample = (() => {
     E.mtime = W.start('DS/MatchTime', 'double', meta('s'));
     const JS = [0, 1].map(p => ({ con: W.start(`DS/Joystick${p}/Connected`, 'boolean'), name: W.start(`DS/Joystick${p}/Name`, 'string'), last: null }));
     const CAMS = ['FrontLeft', 'BackRight'].map(n => ({ n, con: W.start(`Vision/${n}/Connected`, 'boolean'), tags: W.start(`Vision/${n}/TagCount`, 'double'),
-      lat: W.start(`Vision/${n}/LatencyMs`, 'double', meta('ms')), fps: W.start(`Vision/${n}/FPS`, 'double'), last: null }));
+      lat: W.start(`Vision/${n}/LatencyMs`, 'double', meta('ms')), fps: W.start(`Vision/${n}/FPS`, 'double'), last: null,
+      ids: W.start(`Vision/${n}/TagIds`, 'double[]'), yaw: W.start(`Vision/${n}/TagYawDeg`, 'double[]', meta('deg')), dist: W.start(`Vision/${n}/TagDistanceM`, 'double[]', meta('m')),
+      mount: W.start(`Vision/${n}/RobotToCamera`, 'double[]') }));
+    for (const c of CAMS) W.doubles(c.mount, 0, CAM_MOUNTS[c.n]);
     const CAM_OFF = [100.0, 106.5];      // back camera's USB/ethernet drops out
     const CAM_LAG = [60.0, 63.0];        // back camera latency spike (coprocessor overloaded)
     const JS1_OFF = [70.0, 74.0];        // operator controller unplugged
@@ -243,8 +273,11 @@ const Sample = (() => {
         const on = !(k === 1 && tt >= CAM_OFF[0] && tt < CAM_OFF[1]);
         if (c.last !== on) { W.bool(c.con, us(tt), on); c.last = on; }
         if (!on) return;
-        const seesTags = k === 0 ? (tp[0] < 5.8 || (tp[0] > 13 && tp[1] < 2.5)) : (tp[0] > 11.2 || (tp[0] < 3 && tp[1] > 6));
-        W.double(c.tags, us(tt), seesTags ? (R() < 0.5 ? 2 : 1) : 0);
+        const seen = tagsSeen(tp[0], tp[1], tp[2], CAM_MOUNTS[c.n]).filter(() => R() > 0.1);
+        W.double(c.tags, us(tt), seen.length);
+        W.doubles(c.ids, us(tt), seen.map(g => g.id));
+        W.doubles(c.yaw, us(tt), seen.map(g => Math.round((g.yaw + (R() - 0.5) * 0.6) * 100) / 100));
+        W.doubles(c.dist, us(tt), seen.map(g => Math.round(g.dist * (1 + (R() - 0.5) * 0.02) * 1000) / 1000));
         const lag = k === 1 && tt >= CAM_LAG[0] && tt < CAM_LAG[1];
         W.double(c.lat, us(tt), lag ? 210 + R() * 40 : 24 + R() * 10);
         W.double(c.fps, us(tt), lag ? 9 : 30 + (R() - 0.5) * 2);
@@ -252,6 +285,6 @@ const Sample = (() => {
     }
     return W.result();
   }
-  return { generate, fileName: 'FRC_20260411_183207_NCCMP_Q42.wpilog' };
+  return { generate, fileName: 'FRC_20260411_183207_NCCMP_Q42.wpilog', tagsSeen, CAM_MOUNTS };
 })();
 if (typeof module !== 'undefined') module.exports = Sample;

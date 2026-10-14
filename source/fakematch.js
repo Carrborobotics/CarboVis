@@ -92,6 +92,7 @@ const FakeMatch = (() => {
         this.str(p + 'CANBus', bus); this.str(p + 'Controller', 'TalonFX');
         this.dbl(p + 'SupplyLimitA', sup, 'A'); this.dbl(p + 'StatorLimitA', sta, 'A');
       }
+      for (const n of CAMS) this.pub(`/Robot/Vision/${n}/RobotToCamera`, 'double[]', Sample.CAM_MOUNTS[n], null);
     }
 
     newMatch(t) {
@@ -216,10 +217,12 @@ const FakeMatch = (() => {
         const on = !(k === 0 && ev(84, 89));
         this.bool(`Vision/${n}/Connected`, on);
         if (!on) return;
-        // front camera sees tags near our hub, back camera near the far side
-        const nearHub = Math.hypot(this.x - hubX, this.y - hubY) < 3.5;
-        const sees = k === 0 ? nearHub || (enabled && R() < 0.15) : !nearHub && R() < 0.85;
-        if (R() < 0.5) this.dbl(`Vision/${n}/TagCount`, sees ? 1 + Math.floor(R() * 3) : 0);
+        // tags from a rough field layout (sample.js), with the odd dropped frame and a little noise
+        const seen = Sample.tagsSeen(this.x, this.y, this.h, Sample.CAM_MOUNTS[n]).filter(() => R() > 0.08);
+        this.dbl(`Vision/${n}/TagCount`, seen.length);
+        this.pub(`/Robot/Vision/${n}/TagIds`, 'int[]', seen.map(g => g.id), null);
+        this.pub(`/Robot/Vision/${n}/TagYawDeg`, 'double[]', seen.map(g => Math.round((g.yaw + (R() - 0.5) * 0.6) * 100) / 100), 'deg');
+        this.pub(`/Robot/Vision/${n}/TagDistanceM`, 'double[]', seen.map(g => Math.round(g.dist * (1 + (R() - 0.5) * 0.02) * 1000) / 1000), 'm');
         const lag = k === 1 && ev(12, 15);
         this.dbl(`Vision/${n}/LatencyMs`, lag ? 220 + R() * 50 : 22 + R() * 12, 'ms');
         this.dbl(`Vision/${n}/FPS`, lag ? 7 + R() * 2 : 30 + (R() - 0.5) * 2);

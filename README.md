@@ -10,6 +10,7 @@ robot model, all keyed by CAN ID.
 |---|---|
 | `app/` | The driver station app. Double-click `Install 7763 Match Logs.cmd` on each laptop (no admin, no internet). See `app/README.txt`. |
 | `robot-code/` | The robot-side telemetry: `MotorTelemetry.java`, `MatchTelemetry.java` (match view: match time, controllers, cameras) and `robot-telemetry.patch` (the changes made on the `claude` branch of 7763-Code-2026), plus `standalone-telemetry/` for projects that don't use DogLog. |
+| `logging-needed/` | What the robot code still has to log for the match view (camera mounts, AprilTags seen, module angles, ...), written to hand straight to Claude. |
 | `source/` | Source for the app. Edit here and rebuild. |
 | `tools/` | `fake_robot_nt.py` (a fake robot for testing live mode without hardware) and a sample `.wpilog`. |
 

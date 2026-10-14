@@ -377,6 +377,12 @@ body.mv-on > .top, body.mv-on > main { display: none; }
 .mv-svg .cam.lvl-ok .fov, .mv-svg .cam.lvl-warn .fov, .mv-svg .cam.lvl-fault .fov { opacity: .3; }
 .mv-svg .cam.lvl-major { animation: mv-blink 1s infinite; }
 .mv-svg .cam-leg { cursor: help; }
+.mv-svg .front-mark { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.5; stroke-linejoin: round; }
+.mv-svg .tag-ray { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; fill: none; }
+.mv-svg .tag.lvl-ok .tag-ray { stroke: var(--mv-ok); } .mv-svg .tag.lvl-fault .tag-ray { stroke: var(--mv-bad); }
+.mv-svg .tag-sq { fill: #111; stroke: #fff; stroke-width: 1.5; } .mv-svg .tag-in { fill: #fff; }
+.mv-svg .tag-id { font: 700 9px var(--f-mono); fill: #fff; }
+.mv-svg .tag-d { font: 600 11px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
 /* side column */
 .mv-side { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 6px; min-height: 0; }
 .mv-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--ink-2); padding: 1px 0; }

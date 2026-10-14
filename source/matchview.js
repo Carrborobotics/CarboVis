@@ -64,7 +64,8 @@ const MatchView = (() => {
   }
 
   // ---------------- cameras ----------------
-  // Robot convention: Vision/<cam>/Connected, TagCount (or HasTarget), LatencyMs, FPS, Heartbeat, Faults/<flag>.
+  // Robot convention: Vision/<cam>/Connected, TagCount (or HasTarget), LatencyMs, FPS, Heartbeat, Faults/<flag>,
+  // plus the arrays TagIds, TagYawDeg, TagDistanceM (one element per tag in view) and RobotToCamera (the mount).
   // PhotonVision (photonvision/<cam>/...) and Limelight (limelight-<name>/...) tables are read directly too.
   function camerasOf(log) {
     const cams = new Map();
@@ -75,8 +76,13 @@ const MatchView = (() => {
       if (k.startsWith('Faults/')) c.faults[k.slice(7)] = e; else c.e[k] = e;
     };
     for (const e of log.entries.values()) {
-      if (e.kind !== 'num' && e.kind !== 'bool') continue;
       const n = api.Core.stripPrefix(e.name);
+      if (e.kind === 'numarr') {
+        const r = n.match(/^Vision\/([^/]+)\/(TagIds|TagYawDeg|TagDistanceM|RobotToCamera)$/);
+        if (r) add(r[1], 'robot', r[2], e);
+        continue;
+      }
+      if (e.kind !== 'num' && e.kind !== 'bool') continue;
       let r = n.match(/^Vision\/([^/]+)\/(Connected|TagCount|HasTarget|LatencyMs|FPS|Heartbeat|Faults\/\w+)$/);
       if (r) { add(r[1], 'robot', r[2], e); continue; }
       r = n.match(/^photonvision\/([^/]+)\/(hasTarget|latencyMillis|heartbeat)$/);
@@ -84,12 +90,27 @@ const MatchView = (() => {
       r = n.match(/^(limelight(?:-[\w]+)?)\/(tv|tl|hb)$/);
       if (r) add(r[1], 'limelight', { tv: 'HasTarget', tl: 'LatencyMs', hb: 'Heartbeat' }[r[2]], e);
     }
-    return [...cams.values()].filter(c => c.e.Connected || c.e.TagCount || c.e.HasTarget || c.e.Heartbeat).sort((a, b) => a.name.localeCompare(b.name));
+    return [...cams.values()].filter(c => c.e.Connected || c.e.TagCount || c.e.HasTarget || c.e.Heartbeat || c.e.TagYawDeg).sort((a, b) => a.name.localeCompare(b.name));
   }
+  // Drive drawing geometry: frame center and size, bumper offset from the frame, bottom of the area tags can use
+  const DR = { cx: 210, cy: 186, fw: 264, fh: 208, bo: 9, w: 420, top: 362, dy: 0 };
+  // a point on the bumper outline in the direction (nx right, ny back) from the robot's center
+  const bumperPt = (nx, ny) => { const s = Math.max(Math.abs(nx), Math.abs(ny)) || 1; return [Math.round(DR.cx + nx / s * (DR.fw / 2 + DR.bo)), Math.round(DR.cy + ny / s * (DR.fh / 2 + DR.bo))]; };
+  // preset mounts: [right, back, outward facing in degrees clockwise from the front]
   const MOUNTS = {
-    'front-left': [104, 94, -45], front: [210, 88, 0], 'front-right': [316, 94, 45], left: [98, 200, -90], right: [322, 200, 90],
-    'back-left': [104, 306, -135], back: [210, 312, 180], 'back-right': [316, 306, 135],
+    'front-left': [-1, -1, -45], front: [0, -1, 0], 'front-right': [1, -1, 45], left: [-1, 0, -90], right: [1, 0, 90],
+    'back-left': [-1, 1, -135], back: [0, 1, 180], 'back-right': [1, 1, 135],
   };
+  // Vision/<cam>/RobotToCamera = [x forward m, y left m, z m, roll°, pitch°, yaw° (CCW, 0 = forward)], or [x, y, yaw°].
+  // The camera is drawn where that sits around the robot, pushed out to the bumper so it never covers a module.
+  function loggedMount(e) {
+    const xf = e && e.vals && e.vals.length ? e.vals[e.vals.length - 1] : null;
+    if (!xf || (xf.length !== 3 && xf.length < 6) || ![...xf].every(isFinite)) return null;
+    const yaw = xf.length >= 6 ? xf[5] : xf[2];
+    let nx = -xf[1], ny = -xf[0];
+    if (Math.hypot(nx, ny) < 0.02) { nx = -Math.sin(yaw * Math.PI / 180); ny = -Math.cos(yaw * Math.PI / 180); }
+    return [...bumperPt(nx, ny), -yaw];
+  }
   const FACES = { out: null, front: 0, right: 90, back: 180, left: -90 };
   // empty label/mount = take them from the camera's name ("FrontLeft" -> front-left)
   const CAM_DEFAULT = [{ src: '', label: '', mount: '', face: 'out' }, { src: '', label: '', mount: '', face: 'out' }];
@@ -135,7 +156,12 @@ const MatchView = (() => {
     const mechs = S.sum.mechanisms;
     const pick = (k, re) => { const o = mechSrc[k]; if (o !== undefined) return mechs.find(m => m.name === o) || null; return mechs.find(m => re.test(m.name)) || null; };
     const mech = { turret: pick('turret', /turret/i), hood: pick('hood', /hood/i), deploy: pick('deploy', /rack|intake|pivot|deploy|extend/i) };
-    const camView = camCfg.map((cc, i) => ({ ...cc, label: cc.label || (camSel[i] ? camSel[i].name : `Cam ${i + 1}`), mount: cc.mount || inferMount(camSel[i] && camSel[i].name) || CAM_FALLBACK_MOUNT[i] }));
+    const camView = camCfg.map((cc, i) => {
+      const sel = camSel[i], logged = !cc.mount && sel ? loggedMount(sel.e.RobotToCamera) : null;
+      const mount = cc.mount || (logged ? 'logged' : inferMount(sel && sel.name) || CAM_FALLBACK_MOUNT[i]);
+      const [x, y, outA] = logged || (([nx, ny, a]) => [...bumperPt(nx, ny), a])(MOUNTS[mount] || MOUNTS.front);
+      return { ...cc, label: cc.label || (sel ? sel.name : `Cam ${i + 1}`), mount, x, y, a: FACES[cc.face] == null ? outA : FACES[cc.face] };
+    });
     ctxCache = { sum: S.sum, log: S.log, key, motors, auto, roles, cams, camSel, camView, mech };
     return ctxCache;
   }
@@ -180,7 +206,9 @@ const MatchView = (() => {
     let connected = true;
     if (c.e.Connected) connected = v('Connected') === 1;
     else if (c.e.Heartbeat) { const e = c.e.Heartbeat, i = api.Core.idxAt(e.t, t); connected = i >= 0 && t - e.t[i] < 1.0; }
-    const tags = c.e.TagCount ? v('TagCount') : c.e.HasTarget ? (v('HasTarget') ? 1 : 0) : NaN;
+    const seen = connected ? tagsAt(c, t) : [];
+    const counted = !!(c.e.TagCount || c.e.TagYawDeg);
+    const tags = c.e.TagCount ? v('TagCount') : c.e.TagYawDeg ? seen.length : c.e.HasTarget ? (v('HasTarget') ? 1 : 0) : NaN;
     const lat = v('LatencyMs'), fps = v('FPS');
     const faults = Object.entries(c.faults).filter(([, e]) => at(e, t) === 1).map(([k]) => k.replace(/([a-z])([A-Z])/g, '$1 $2'));
     if (connected) {
@@ -188,8 +216,24 @@ const MatchView = (() => {
       if (fps < cfg.camMinFps) faults.push(`${Math.round(fps)} FPS`);
     }
     const lvl = !connected ? 'major' : faults.length ? 'fault' : tags > 0 ? 'ok' : 'warn';
-    const text = !connected ? 'OFFLINE' : faults.length ? faults.join(', ') : tags > 0 ? (c.e.TagCount ? `${Math.round(tags)} tag${tags === 1 ? '' : 's'}` : 'tag seen') : 'no tag';
-    return { lvl, label: cc.label, text, tags, lat, fps, connected, faults, c, notes: !connected ? [['major', 'Camera not connected']] : faults.map(f => ['fault', f]) };
+    const text = !connected ? 'OFFLINE' : faults.length ? faults.join(', ') : tags > 0 ? (counted ? `${Math.round(tags)} tag${tags === 1 ? '' : 's'}` : 'tag seen') : 'no tag';
+    return { lvl, label: cc.label, text, tags, counted, seen, lat, fps, connected, faults, c, notes: !connected ? [['major', 'Camera not connected']] : faults.map(f => ['fault', f]) };
+  }
+
+  // AprilTags a camera sees at time t: [{ id, yaw (degrees, + = left of the camera's center), d (meters) }].
+  // The robot logs the arrays every loop (empty when nothing is in view); a camera that stops logging them for
+  // 2 s is treated as seeing nothing rather than leaving old tags on screen.
+  function tagsAt(c, t) {
+    const ye = c.e.TagYawDeg;
+    if (!ye || !ye.vals) return [];
+    const i = api.Core.idxAt(ye.t, t);
+    if (i < 0 || t - ye.t[i] > 2) return [];
+    const yaw = ye.vals[i];
+    const arr = e => { if (!e || !e.vals) return null; const k = api.Core.idxAt(e.t, t); return k >= 0 && e.vals[k].length === yaw.length ? e.vals[k] : null; };
+    const d = arr(c.e.TagDistanceM), ids = arr(c.e.TagIds);
+    const out = [];
+    for (let k = 0; k < yaw.length; k++) if (isFinite(yaw[k])) out.push({ yaw: yaw[k], d: d ? d[k] : NaN, id: ids ? ids[k] : NaN });
+    return out;
   }
 
   function liveComms() {
@@ -209,28 +253,70 @@ const MatchView = (() => {
   }
 
   // ---------------- SVG pieces ----------------
-  const chip = (id, x, y, w, kind = 'slot') => `<g class="chip lvl-none" data-${kind}="${id}" transform="translate(${x},${y})"><rect class="chip-bg" width="${w}" height="28" rx="6"/><text class="chip-a" x="8" y="19"></text><text class="chip-b" x="${w - 8}" y="19" text-anchor="end"></text></g>`;
+  const chip = (id, x, y, w, kind = 'slot', h = 28) => `<g class="chip lvl-none" data-${kind}="${id}" transform="translate(${x},${y})"><rect class="chip-bg" width="${w}" height="${h}" rx="6"/><text class="chip-a" x="8" y="${h / 2 + 5}"></text><text class="chip-b" x="${w - 8}" y="${h / 2 + 5}" text-anchor="end"></text></g>`;
 
+  // Swerve modules sit in the frame's corners with their drive/steer chips beside them. Cameras sit on the bumper
+  // outline; the AprilTags each one sees are drawn out past the bumper (see drawTags).
   function driveSVG(c) {
-    const pod = (m, cx, cy) => `<g transform="translate(${cx},${cy})"><rect x="-28" y="-28" width="56" height="56" rx="10" class="pod"/>
-      <circle r="23" class="st s" data-part="${m}s" stroke-width="5" fill="none"/>
-      <g data-wheel="${m}"><rect x="-8" y="-18" width="16" height="36" rx="4" class="st f" data-part="${m}d"/><path d="M0-14v-6" class="wheel-dir"/></g></g>`;
-    const P = { FL: [148, 138], FR: [272, 138], BL: [148, 262], BR: [272, 262] };
-    const chips = [['FLd', 4, 108], ['FLs', 4, 140], ['BLd', 4, 232], ['BLs', 4, 264], ['FRd', 338, 108], ['FRs', 338, 140], ['BRd', 338, 232], ['BRs', 338, 264]].map(([id, x, y]) => chip(id, x, y, 78)).join('');
-    const cams = c.camView.map((cc, i) => {
-      const [x, y, outA] = MOUNTS[cc.mount] || MOUNTS.front;
-      const a = FACES[cc.face] == null ? outA : FACES[cc.face];
-      return `<g class="cam lvl-none" data-cam="${i}" transform="translate(${x},${y}) rotate(${a})"><path d="M0 0L-22-50A55 55 0 0 1 22-50Z" class="fov"/><rect x="-13" y="-10" width="26" height="20" rx="5" class="cam-body"/><text y="5" text-anchor="middle" class="cam-n" transform="rotate(${-a})">${i + 1}</text></g>`;
+    const { cx, cy, fw, fh, bo } = DR, x0 = cx - fw / 2, y0 = cy - fh / 2, POD = 50, IN = 6, CW = 66;
+    const pod = (m, px, py) => `<g transform="translate(${px},${py})"><rect x="-25" y="-25" width="50" height="50" rx="9" class="pod"/>
+      <circle r="20.5" class="st s" data-part="${m}s" stroke-width="5" fill="none"/>
+      <g data-wheel="${m}"><rect x="-7" y="-16" width="14" height="32" rx="4" class="st f" data-part="${m}d"/><path d="M0-11v-7" class="wheel-dir"/></g></g>`;
+    const left = x0 + IN + POD / 2, right = x0 + fw - IN - POD / 2, top = y0 + IN + POD / 2, bot = y0 + fh - IN - POD / 2;
+    const P = { FL: [left, top], FR: [right, top], BL: [left, bot], BR: [right, bot] };
+    const chipX = { FL: x0 + IN + POD + 5, BL: x0 + IN + POD + 5, FR: x0 + fw - IN - POD - 5 - CW, BR: x0 + fw - IN - POD - 5 - CW };
+    const chips = MODS.map(m => chip(m + 'd', chipX[m], P[m][1] - 27, CW, 'slot', 26) + chip(m + 's', chipX[m], P[m][1] + 1, CW, 'slot', 26)).join('');
+    const cams = c.camView.map((cc, i) => `<g class="cam lvl-none" data-cam="${i}" transform="translate(${cc.x},${cc.y}) rotate(${cc.a})"><path d="M0 0L-26.4-37.7A46 46 0 0 1 26.4-37.7Z" class="fov"/><rect x="-12" y="-9" width="24" height="18" rx="5" class="cam-body"/><text y="4.5" text-anchor="middle" class="cam-n" transform="rotate(${-cc.a})">${i + 1}</text></g>`).join('');
+    const legend = c.camView.map((cc, i) => `<g class="cam-leg lvl-none" data-camleg="${i}" data-x="${i ? 214 : 6}" transform="translate(${i ? 214 : 6},372)"><rect class="chip-bg" width="200" height="30" rx="6"/><text class="chip-a" x="10" y="20">${i + 1} · ${esc(cc.label)}</text><text class="chip-b" x="192" y="20" text-anchor="end"></text></g>`).join('');
+    const by = y0 - bo;
+    return `<svg viewBox="0 0 420 406" class="mv-svg" data-drive="1" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Drive base">
+      <text x="${cx}" y="${by - 12}" text-anchor="middle" class="front-lab">FRONT</text>
+      <rect x="${x0 - bo}" y="${by}" width="${fw + 2 * bo}" height="${fh + 2 * bo}" rx="14" class="bumper" data-bumper="1"/>
+      <path d="M${cx - 10} ${by + 4}L${cx} ${by - 7}L${cx + 10} ${by + 4}Z" class="front-mark"/>
+      <rect x="${x0}" y="${y0}" width="${fw}" height="${fh}" rx="8" class="frame"/>
+      ${MODS.map(m => pod(m, ...P[m])).join('')}
+      <g transform="translate(${cx},${cy - 6})"><circle r="24" class="compass"/><g data-heading="1"><path d="M0-31L5-23H-5Z" class="needle"/></g><text y="4" text-anchor="middle" class="ro-tiny hdg" data-ro="hdg"></text></g>
+      <text x="${cx}" y="${cy + 38}" text-anchor="middle" class="ro-small" data-ro="speed"></text>
+      <g data-tags="1"></g>${cams}${chips}${legend}</svg>`;
+  }
+
+  // Each tag is drawn along the direction its camera sees it. Distance is squeezed with d / (d + TAG_D0), so a
+  // tag 2 m away lands halfway between the camera and the edge of the drawing and far tags still stay in view.
+  const TAG_D0 = 2;
+  // A tall drive card gets a taller drawing: the robot stays put, the camera legend moves to the bottom and the
+  // extra room above and below goes to the tags.
+  function fitDrive(el) {
+    const svg = el.drive, w = svg.clientWidth, h = svg.clientHeight;
+    const dy = w > 0 && h > 0 ? Math.round(Math.max(0, Math.min(160, (420 * h / w - 406) / 2))) : 0;
+    if (dy === DR.dy && svg.dataset.fit) return;
+    DR.dy = dy; svg.dataset.fit = '1';
+    svg.setAttribute('viewBox', `0 ${-dy} 420 ${406 + 2 * dy}`);
+    for (const l of el.camLeg) l.g.setAttribute('transform', `translate(${l.g.dataset.x},${372 + dy})`);
+    el.tags.dataset.k = '';
+  }
+  function drawTags(el, c, camS) {
+    fitDrive(el);
+    const parts = [], y0 = 12 - DR.dy, y1 = DR.top + DR.dy - 12;
+    camS.forEach((cs, i) => {
+      const v = c.camView[i];
+      for (const g of cs.seen || []) {
+        const th = (v.a - g.yaw) * Math.PI / 180, ux = Math.sin(th), uy = -Math.cos(th), m = 12;
+        const room = Math.max(0, Math.min(ux > 1e-6 ? (DR.w - m - v.x) / ux : ux < -1e-6 ? (m - v.x) / ux : Infinity, uy > 1e-6 ? (y1 - v.y) / uy : uy < -1e-6 ? (y0 - v.y) / uy : Infinity));
+        const near = Math.min(room, 26), L = near + (room - near) * (isFinite(g.d) && g.d >= 0 ? g.d / (g.d + TAG_D0) : 0.5);
+        parts.push({ lvl: cs.lvl, x: v.x + ux * L, y: v.y + uy * L, x0: v.x + ux * 14, y0: v.y + uy * 14, ux, id: g.id, d: g.d });
+      }
+    });
+    const key = parts.map(p => [p.lvl, Math.round(p.x), Math.round(p.y), p.id, isFinite(p.d) ? p.d.toFixed(1) : ''].join()).join(';');
+    if (el.tags.dataset.k === key) return;
+    el.tags.dataset.k = key;
+    el.tags.innerHTML = parts.map(p => {
+      // distance label beside the tag, on the side away from the camera unless that runs off the drawing
+      const right = p.ux > 0.05 ? p.x < DR.w - 60 : p.ux < -0.05 ? p.x < 60 : p.x < DR.w - 60;
+      const lx = right ? p.x + 13 : p.x - 13, ly = p.y + 4, anchor = right ? 'start' : 'end';
+      return `<g class="tag lvl-${p.lvl}"><path d="M${p.x0.toFixed(1)} ${p.y0.toFixed(1)}L${p.x.toFixed(1)} ${p.y.toFixed(1)}" class="tag-ray"/>
+        <g transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})"><rect x="-9" y="-9" width="18" height="18" rx="2" class="tag-sq"/>${isFinite(p.id) ? `<text y="3.5" text-anchor="middle" class="tag-id">${Math.round(p.id)}</text>` : '<rect x="-4" y="-4" width="8" height="8" class="tag-in"/>'}</g>
+        ${isFinite(p.d) ? `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}" class="tag-d">${p.d.toFixed(1)} m</text>` : ''}</g>`;
     }).join('');
-    const legend = c.camView.map((cc, i) => `<g class="cam-leg lvl-none" data-camleg="${i}" transform="translate(${i ? 214 : 6},372)"><rect class="chip-bg" width="200" height="30" rx="6"/><text class="chip-a" x="10" y="20">${i + 1} · ${esc(cc.label)}</text><text class="chip-b" x="192" y="20" text-anchor="end"></text></g>`).join('');
-    return `<svg viewBox="0 0 420 406" class="mv-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Drive base">
-      <text x="210" y="58" text-anchor="middle" class="front-lab">▲ FRONT</text>
-      <rect x="86" y="76" width="248" height="248" rx="16" class="bumper" data-bumper="1"/>
-      <rect x="98" y="88" width="224" height="224" rx="8" class="frame"/>
-      ${Object.entries(P).map(([m, [x, y]]) => pod(m, x, y)).join('')}
-      <g transform="translate(210,200)"><circle r="28" class="compass"/><g data-heading="1"><path d="M0-36L6-27H-6Z" class="needle"/></g><text y="4" text-anchor="middle" class="ro-tiny hdg" data-ro="hdg"></text></g>
-      <text x="210" y="248" text-anchor="middle" class="ro-small" data-ro="speed"></text>
-      ${cams}${chips}${legend}</svg>`;
   }
 
   function shooterSVG(c) {
@@ -345,7 +431,7 @@ const MatchView = (() => {
       sum: Object.fromEntries([...root.querySelectorAll('[data-sum]')].map(e => [e.dataset.sum, e])),
       wheels: Object.fromEntries([...root.querySelectorAll('[data-wheel]')].map(e => [e.dataset.wheel, e])),
       spark: Object.fromEntries([...root.querySelectorAll('[data-spark]')].map(e => [e.dataset.spark, e])),
-      heading: q('[data-heading]'), turret: q('[data-turret]'), tset: q('[data-tset]'), deploy: q('[data-deploy]'), spin: q('[data-spin="intake"]'), bumper: q('[data-bumper]'), batt: q('[data-batt]'),
+      heading: q('[data-heading]'), turret: q('[data-turret]'), tset: q('[data-tset]'), deploy: q('[data-deploy]'), tags: q('[data-tags]'), drive: q('[data-drive]'), spin: q('[data-spin="intake"]'), bumper: q('[data-bumper]'), batt: q('[data-batt]'),
     };
     root.querySelector('[data-act="setup"]').onclick = () => openSetup();
     root.querySelector('[data-act="exit"]').onclick = () => close();
@@ -356,7 +442,7 @@ const MatchView = (() => {
     renderFoot();
   }
 
-  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => v.label + v.mount).join() + '|' + api.S.log.fileName + '|' + !!c.mech.deploy;
+  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => [v.label, v.mount, v.x, v.y, v.a].join(':')).join() + '|' + api.S.log.fileName + '|' + !!c.mech.deploy;
 
   // ---------------- per-frame update ----------------
   const setLvl = (el, lvl) => { const cls = el.getAttribute('class').replace(/\blvl-\w+/g, '').trim() + ' lvl-' + lvl; if (el.getAttribute('class') !== cls) el.setAttribute('class', cls); };
@@ -407,7 +493,7 @@ const MatchView = (() => {
       icSet('js' + p, lvl, !ce ? '?' : on ? `USB ${p}` : 'Unplugged', !ce ? `Publish DS/Joystick${p}/Connected from the robot (see robot-code/MatchTelemetry.java)` : `Port ${p}${nm ? ': ' + nm : ''}`);
     }
     const camS = c.camView.map((cc, i) => camNow(c.camSel[i], t, cc));
-    camS.forEach((cs, i) => icSet('cam' + i, cs.lvl, cs.lvl === 'none' ? '?' : cs.lvl === 'major' ? 'Off' : cs.lvl === 'ok' ? (isFinite(cs.tags) && c.camSel[i].e.TagCount ? `${Math.round(cs.tags)} tag` : 'Tag') : cs.lvl === 'warn' ? 'No tag' : 'Fault', cs.c ? `${cs.label} (${cs.c.name}): ${cs.text}` : `${cs.label}: no camera data. Log Vision/<name>/Connected and TagCount (see Setup).`));
+    camS.forEach((cs, i) => icSet('cam' + i, cs.lvl, cs.lvl === 'none' ? '?' : cs.lvl === 'major' ? 'Off' : cs.lvl === 'ok' ? (isFinite(cs.tags) && cs.counted ? `${Math.round(cs.tags)} tag` : 'Tag') : cs.lvl === 'warn' ? 'No tag' : 'Fault', cs.c ? `${cs.label} (${cs.c.name}): ${cs.text}` : `${cs.label}: no camera data. Log Vision/<name>/Connected and TagCount (see Setup).`));
 
     // motors
     const mstate = {};
@@ -451,6 +537,7 @@ const MatchView = (() => {
     if (angE && angE.vals) { const i = api.Core.idxAt(angE.t, t); const arr = i >= 0 ? angE.vals[i] : null; MODS.forEach((m, k) => el.wheels[m].setAttribute('transform', `rotate(${arr && isFinite(arr[k]) ? -arr[k] : 0})`)); }
     el.bumper.setAttribute('class', 'bumper ' + (info.alliance ? info.alliance.toLowerCase() : ''));
     camS.forEach((cs, i) => { if (el.cams[i]) setLvl(el.cams[i], cs.lvl); if (el.camLeg[i]) { setLvl(el.camLeg[i].g, cs.lvl); setText(el.camLeg[i].b, cs.c ? (cs.text.length > 14 ? cs.text.slice(0, 13) + '…' : cs.text) : 'no data'); } });
+    drawTags(el, c, camS);
 
     // shooter readouts
     const mv = (m, k) => (m && m.entries[k] ? at(m.entries[k], t) : NaN);
@@ -644,7 +731,7 @@ const MatchView = (() => {
     const ci = tgt.dataset.cam ?? tgt.dataset.camleg;
     if (ci != null) {
       const cs = camS[+ci];
-      html = `<div class="tt">Camera ${+ci + 1} · ${esc(cs.label)}</div>` + (cs.c ? `<div class="row">Source<b>${esc(cs.c.name)}</b></div><div class="row">Status<b>${esc(cs.text)}</b></div>${isFinite(cs.lat) ? `<div class="row">Latency<b>${Math.round(cs.lat)} ms</b></div>` : ''}${isFinite(cs.fps) ? `<div class="row">FPS<b>${Math.round(cs.fps)}</b></div>` : ''}` : '<div>No camera data. Pick a source in Setup.</div>');
+      html = `<div class="tt">Camera ${+ci + 1} · ${esc(cs.label)}</div>` + (cs.c ? `<div class="row">Source<b>${esc(cs.c.name)}</b></div><div class="row">Status<b>${esc(cs.text)}</b></div>${isFinite(cs.lat) ? `<div class="row">Latency<b>${Math.round(cs.lat)} ms</b></div>` : ''}${isFinite(cs.fps) ? `<div class="row">FPS<b>${Math.round(cs.fps)}</b></div>` : ''}${cs.seen.length ? `<div class="row">Tags<b>${esc(cs.seen.map(g => (isFinite(g.id) ? Math.round(g.id) : '?') + (isFinite(g.d) ? ` (${g.d.toFixed(1)} m)` : '')).join(', '))}</b></div>` : ''}` : '<div>No camera data. Pick a source in Setup.</div>');
     } else {
       let id = tgt.dataset.slot || tgt.dataset.part;
       if (id === 'fw') id = ['fw1', 'fw2', 'fw3', 'fw4'].find(s => mstate[s].lvl !== 'none') || 'fw1';
@@ -679,7 +766,7 @@ const MatchView = (() => {
     const camRow = (cc, i) => `<fieldset><legend>Camera ${i + 1}</legend>
       <label><span>Name</span><input type="text" data-cam-label="${i}" value="${esc(cc.label)}" placeholder="${esc(c.camView[i].label)}"></label>
       <label><span>Data</span><select class="sel" data-cam-src="${i}"><option value=""${!cc.src ? ' selected' : ''}>Auto${!cc.src && c.camSel[i] ? ` (${esc(c.camSel[i].name)})` : ''}</option>${c.cams.map(x => `<option value="${esc(x.id)}"${cc.src === x.id ? ' selected' : ''}>${esc(x.name)} (${x.src})</option>`).join('')}</select></label>
-      <label><span>Mounted</span><select class="sel" data-cam-mount="${i}"><option value=""${!cc.mount ? ' selected' : ''}>Auto from name (${c.camView[i].mount})</option>${Object.keys(MOUNTS).map(m => `<option${cc.mount === m ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
+      <label><span>Mounted</span><select class="sel" data-cam-mount="${i}"><option value=""${!cc.mount ? ' selected' : ''}>${c.camView[i].mount === 'logged' && !cc.mount ? 'Auto (logged RobotToCamera)' : `Auto from name (${c.camView[i].mount})`}</option>${Object.keys(MOUNTS).map(m => `<option${cc.mount === m ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
       <label><span>Faces</span><select class="sel" data-cam-face="${i}">${Object.keys(FACES).map(m => `<option value="${m}"${cc.face === m ? ' selected' : ''}>${m === 'out' ? 'outward' : m}</option>`).join('')}</select></label></fieldset>`;
     const num = (k, label, step = 1) => `<label><span>${label}</span><input type="number" step="${step}" data-cfg="${k}" value="${cfg[k]}"></label>`;
     box.innerHTML = `<div class="mv-setup-in" role="dialog" aria-label="Match view setup">
@@ -690,7 +777,7 @@ const MatchView = (() => {
         <section><h3>Intake / indexer</h3>${SLOTS.intake.map(slotRow).join('')}${mechRow('deploy', 'Intake extension')}</section>
         <section><h3>Cameras</h3>${camCfg.map(camRow).join('')}
           <div class="mv-two">${num('camLatencyMs', 'Fault above (ms)')}${num('camMinFps', 'Fault below (FPS)')}</div>
-          <p class="hint">${c.cams.length ? `Found: ${c.cams.map(x => esc(x.name)).join(', ')}.` : 'No camera data yet. Log Vision/&lt;name&gt;/Connected and Vision/&lt;name&gt;/TagCount (robot-code/MatchTelemetry.java), or PhotonVision/Limelight tables are picked up on their own.'}</p></section>
+          <p class="hint">${c.cams.length ? `Found: ${c.cams.map(x => esc(x.name)).join(', ')}.` : 'No camera data yet. Log Vision/&lt;name&gt;/Connected and Vision/&lt;name&gt;/TagCount (robot-code/MatchTelemetry.java), or PhotonVision/Limelight tables are picked up on their own.'} Cameras that log Vision/&lt;name&gt;/RobotToCamera are placed from it, and TagYawDeg / TagDistanceM / TagIds draw the tags they see (logging-needed/match-view-logging.md).</p></section>
         <section><h3>Window and match</h3>
           ${num('dsHeight', 'Leave for Driver Station (px)')}
           <label class="chk"><input type="checkbox" data-cfg-b="autoFit"${cfg.autoFit ? ' checked' : ''}> Fit the window above the Driver Station when match view opens</label>
