@@ -1,5 +1,18 @@
+diff --git a/src/main/java/frc/robot/Constants.java b/src/main/java/frc/robot/Constants.java
+index 57c9237..7fac49e 100644
+--- a/src/main/java/frc/robot/Constants.java
++++ b/src/main/java/frc/robot/Constants.java
+@@ -50,6 +50,8 @@ public final class Constants {
+ 
+     public static final class Driver {
+         public static final int PORT = 0;
++        /** Controller ports logged as DS/Joystick0, DS/Joystick1, ... (0 = driver, 1 = operator). */
++        public static final int LOGGED_JOYSTICK_PORTS = 2;
+         public static final double DEADBAND = 0.12;
+         /** POV up/down changes the flywheel speed offset by this much. */
+         public static final double FLYWHEEL_OFFSET_STEP_RPS = 2.0;
 diff --git a/src/main/java/frc/robot/Robot.java b/src/main/java/frc/robot/Robot.java
-index 22f88cb..5edc108 100644
+index 22f88cb..5add752 100644
 --- a/src/main/java/frc/robot/Robot.java
 +++ b/src/main/java/frc/robot/Robot.java
 @@ -30,6 +30,7 @@ import edu.wpi.first.math.geometry.Rotation3d;
@@ -26,10 +39,13 @@ index 22f88cb..5edc108 100644
  
      // Dashboard keys (Elastic reads these; see elastic-layout.json).
      private static final String TILT_TOGGLE = "Driver/Tilt Compensation";
-@@ -113,6 +116,13 @@ public class Robot extends TimedRobot {
+@@ -112,7 +115,15 @@ public class Robot extends TimedRobot {
+     private static final Path SHOT_FILE = Filesystem.getOperatingDirectory().toPath().resolve("shots.csv");
  
      public Robot() {
-         DogLog.setOptions(new DogLogOptions().withCaptureDs(true).withNtPublish(true));
+-        DogLog.setOptions(new DogLogOptions().withCaptureDs(true).withNtPublish(true));
++        // Extras: battery, brownouts, CAN utilization/errors and DS state under SystemStats/ (CarboVis match view).
++        DogLog.setOptions(new DogLogOptions().withCaptureDs(true).withNtPublish(true).withLogExtras(true));
 +        // PDH per-channel currents, total current/power and temperature go into DogLog's SystemStats/.
 +        // Auto-detects a REV PDH (CAN 1) or CTRE PDP (CAN 0); if neither answers, telemetry just goes without it.
 +        try {
@@ -40,7 +56,7 @@ index 22f88cb..5edc108 100644
  
          registerNamedCommands(); // must happen before autos are loaded
          autoChooser = AutoBuilder.buildAutoChooser();
-@@ -255,6 +265,8 @@ public class Robot extends TimedRobot {
+@@ -255,6 +266,8 @@ public class Robot extends TimedRobot {
      public void robotPeriodic() {
          CommandScheduler.getInstance().run(); // drivetrain odometry, auto commands, button bindings
          double now = Timer.getFPGATimestamp();
@@ -49,7 +65,7 @@ index 22f88cb..5edc108 100644
          Tuning.update();
          vision.addMeasurements(drive::addVisionMeasurement);
  
-@@ -280,6 +292,7 @@ public class Robot extends TimedRobot {
+@@ -280,6 +293,7 @@ public class Robot extends TimedRobot {
              publishHealth();
          }
          log(shot, hub, now);
@@ -57,8 +73,21 @@ index 22f88cb..5edc108 100644
      }
  
      private void apply(Setpoints sp) {
+@@ -459,6 +473,12 @@ public class Robot extends TimedRobot {
+         DogLog.log("Hub/ChangeInS", hub.secondsUntilChange());
+         DogLog.log("Hub/Known", hub.known());
+         DogLog.log("MatchTime", DriverStation.getMatchTime());
++        DogLog.log("DS/MatchTime", DriverStation.getMatchTime(), "s");
++        for (int port = 0; port < Driver.LOGGED_JOYSTICK_PORTS; port++) {
++            boolean connected = DriverStation.isJoystickConnected(port);
++            DogLog.log("DS/Joystick" + port + "/Connected", connected);
++            DogLog.log("DS/Joystick" + port + "/Name", connected ? DriverStation.getJoystickName(port) : "");
++        }
+         DogLog.log("IsRed", isRed());
+         turret.log();
+         hood.log();
 diff --git a/src/main/java/frc/robot/subsystems/CtreSwerve.java b/src/main/java/frc/robot/subsystems/CtreSwerve.java
-index 5bf17cc..fc00a05 100644
+index 5bf17cc..71107eb 100644
 --- a/src/main/java/frc/robot/subsystems/CtreSwerve.java
 +++ b/src/main/java/frc/robot/subsystems/CtreSwerve.java
 @@ -117,6 +117,8 @@ public final class CtreSwerve extends SubsystemBase implements SwerveDrive {
@@ -70,6 +99,29 @@ index 5bf17cc..fc00a05 100644
              Health.register(name + " CANcoder (" + Drive.MODULES[i].cancoderId() + ")", module.getEncoder());
          }
          Health.register("Pigeon (" + CAN.PIGEON + ")", drivetrain.getPigeon2());
+@@ -131,6 +133,7 @@ public final class CtreSwerve extends SubsystemBase implements SwerveDrive {
+         field.setRobotPose(state.Pose);
+         DogLog.log("Drive/Pose", state.Pose);
+         DogLog.log("Drive/MeasuredStates", state.ModuleStates);
++        DogLog.log("Drive/ModuleAngles", SwerveDrive.moduleAnglesDeg(state.ModuleStates));
+         DogLog.log("Drive/TargetStates", state.ModuleTargets);
+         DogLog.log("Drive/OdometryHz", 1.0 / Math.max(1e-3, state.OdometryPeriod));
+         DogLog.log("Drive/FailedDaqs", state.FailedDaqs);
+diff --git a/src/main/java/frc/robot/subsystems/CustomSwerve.java b/src/main/java/frc/robot/subsystems/CustomSwerve.java
+index 9e8e5da..4632446 100644
+--- a/src/main/java/frc/robot/subsystems/CustomSwerve.java
++++ b/src/main/java/frc/robot/subsystems/CustomSwerve.java
+@@ -88,7 +88,9 @@ public final class CustomSwerve extends SubsystemBase implements SwerveDrive {
+         field.setRobotPose(pose);
+         DogLog.log("Drive/Pose", pose);
+         DogLog.log("Drive/GyroYawDeg", gyroYaw.getValueAsDouble());
+-        DogLog.log("Drive/MeasuredStates", moduleStates());
++        SwerveModuleState[] states = moduleStates();
++        DogLog.log("Drive/MeasuredStates", states);
++        DogLog.log("Drive/ModuleAngles", SwerveDrive.moduleAnglesDeg(states));
+         DogLog.log("Drive/CommandedSpeeds", lastCommanded);
+         for (SwerveModule m : modules) {
+             DogLog.log("Drive/CANcoderDeg/" + m.name, m.cancoderDegrees());
 diff --git a/src/main/java/frc/robot/subsystems/Hood.java b/src/main/java/frc/robot/subsystems/Hood.java
 index de4319c..be6f275 100644
 --- a/src/main/java/frc/robot/subsystems/Hood.java
@@ -221,6 +273,32 @@ index fd3b6c7..ecc5398 100644
 +        DogLog.log("Mechanisms/Rack/Setpoint", goalRot, "rot");
      }
  }
+diff --git a/src/main/java/frc/robot/subsystems/SwerveDrive.java b/src/main/java/frc/robot/subsystems/SwerveDrive.java
+index c2861ce..d55e4c3 100644
+--- a/src/main/java/frc/robot/subsystems/SwerveDrive.java
++++ b/src/main/java/frc/robot/subsystems/SwerveDrive.java
+@@ -11,6 +11,7 @@ import edu.wpi.first.math.geometry.Rotation2d;
+ import edu.wpi.first.math.geometry.Rotation3d;
+ import edu.wpi.first.math.geometry.Translation2d;
+ import edu.wpi.first.math.kinematics.ChassisSpeeds;
++import edu.wpi.first.math.kinematics.SwerveModuleState;
+ import edu.wpi.first.math.numbers.N1;
+ import edu.wpi.first.math.numbers.N3;
+ import edu.wpi.first.wpilibj.DriverStation;
+@@ -62,6 +63,13 @@ public interface SwerveDrive extends Subsystem {
+ 
+     double sysIdVelocityMps();
+ 
++    /** Wheel angles relative to the robot (deg, CCW+, 0 = forward) in FL, FR, BL, BR order, for the match view. */
++    static double[] moduleAnglesDeg(SwerveModuleState[] states) {
++        double[] deg = new double[states.length];
++        for (int i = 0; i < states.length; i++) deg[i] = states[i].angle.getDegrees();
++        return deg;
++    }
++
+     /** Hook up PathPlanner. Both implementations call this once from their constructor. */
+     static void configurePathPlanner(SwerveDrive drive) {
+         try {
 diff --git a/src/main/java/frc/robot/subsystems/Talons.java b/src/main/java/frc/robot/subsystems/Talons.java
 index 8928905..1400d51 100644
 --- a/src/main/java/frc/robot/subsystems/Talons.java
@@ -246,3 +324,153 @@ index 0b6c4e2..04f428d 100644
 +        DogLog.log("Mechanisms/Turret/Setpoint", goalDeg, "deg");
      }
  }
+diff --git a/src/main/java/frc/robot/subsystems/Vision.java b/src/main/java/frc/robot/subsystems/Vision.java
+index 132fe7c..b800778 100644
+--- a/src/main/java/frc/robot/subsystems/Vision.java
++++ b/src/main/java/frc/robot/subsystems/Vision.java
+@@ -27,6 +27,10 @@ import frc.robot.Constants.Field;
+  * <p>Each camera publishes a plain-English status to SmartDashboard ("Vision/Front Status",
+  * "Vision/Side Status") saying why it is or isn't updating the pose, plus its raw estimate before
+  * filtering ("Vision/Side/RawPose") so a bad robot-to-camera transform is easy to spot.
++ *
++ * <p>For the CarboVis match view, every loop each camera also logs its mount (RobotToCamera), health
++ * (Connected, TagCount, LatencyMs, FPS) and the tags in its latest result (TagIds, TagYawDeg,
++ * TagDistanceM: same length and order, empty when none, yaw CCW+ so a tag on the LEFT is positive).
+  */
+ public final class Vision {
+     /** Where accepted measurements go (the drivetrain's pose estimator). */
+@@ -39,16 +43,65 @@ public final class Vision {
+         final String label;
+         final PhotonCamera camera;
+         final PhotonPoseEstimator estimator;
++        final double[] robotToCamera;
+         int accepted = 0;
+         String status = "starting";
++        // Tags in the latest result, re-logged every loop until a new result arrives.
++        long[] tagIds = new long[0];
++        double[] tagYawDeg = new double[0];
++        double[] tagDistanceM = new double[0];
++        double latencyMs = 0;
++        double fps = 0;
++        long lastCaptureMicros = 0;
+ 
+         Camera(String label, String photonName, Transform3d robotToCamera) {
+             this.label = label;
+             camera = new PhotonCamera(photonName);
+             estimator = new PhotonPoseEstimator(Field.TAGS, robotToCamera);
++            this.robotToCamera = mountArray(robotToCamera);
++        }
++
++        void recordTags(PhotonPipelineResult result) {
++            List<PhotonTrackedTarget> targets = result.getTargets();
++            int n = targets.size();
++            tagIds = new long[n];
++            tagYawDeg = new double[n];
++            tagDistanceM = new double[n];
++            for (int i = 0; i < n; i++) {
++                Transform3d t = targets.get(i).getBestCameraToTarget();
++                tagIds[i] = targets.get(i).getFiducialId();
++                tagYawDeg[i] = tagYawDeg(t);
++                tagDistanceM[i] = tagFloorDistanceM(t);
++            }
++            latencyMs = result.metadata.getLatencyMillis();
++            long capture = result.metadata.getCaptureTimestampMicros();
++            if (lastCaptureMicros > 0 && capture > lastCaptureMicros) fps = 1e6 / (capture - lastCaptureMicros);
++            lastCaptureMicros = capture;
++        }
++
++        void clearTags() {
++            tagIds = new long[0];
++            tagYawDeg = new double[0];
++            tagDistanceM = new double[0];
+         }
+     }
+ 
++    /** Horizontal angle from the camera's center line to the tag, degrees, CCW+ (tag on the LEFT is positive). */
++    static double tagYawDeg(Transform3d cameraToTarget) {
++        return Math.toDegrees(Math.atan2(cameraToTarget.getY(), cameraToTarget.getX()));
++    }
++
++    /** Floor-plane distance from the camera to the tag, meters. */
++    static double tagFloorDistanceM(Transform3d cameraToTarget) {
++        return Math.hypot(cameraToTarget.getX(), cameraToTarget.getY());
++    }
++
++    /** {x m, y m, z m, roll deg, pitch deg, yaw deg}, robot center to camera. */
++    static double[] mountArray(Transform3d m) {
++        return new double[] {m.getX(), m.getY(), m.getZ(), Math.toDegrees(m.getRotation().getX()),
++                Math.toDegrees(m.getRotation().getY()), Math.toDegrees(m.getRotation().getZ())};
++    }
++
+     private final List<Camera> cameras = List.of(
+             new Camera("Front", Constants.Vision.CAM_FRONT, Constants.Vision.ROBOT_TO_CAM_FRONT),
+             new Camera("Side", Constants.Vision.CAM_SIDE, Constants.Vision.ROBOT_TO_CAM_SIDE));
+@@ -61,15 +114,27 @@ public final class Vision {
+ 
+     public void addMeasurements(Consumer poseEstimator) {
+         for (Camera cam : cameras) {
+-            if (!cam.camera.isConnected()) {
++            boolean connected = cam.camera.isConnected();
++            if (!connected) {
+                 cam.status = "NOT CONNECTED (camera name in PhotonVision must match Constants.Vision)";
++                cam.clearTags(); // don't keep drawing tags from a camera that's gone
+             }
+             for (PhotonPipelineResult result : cam.camera.getAllUnreadResults()) {
++                cam.recordTags(result);
+                 cam.status = process(cam, result, poseEstimator);
+             }
++            String key = "Vision/" + cam.label + "/";
+             SmartDashboard.putString("Vision/" + cam.label + " Status", cam.status);
+-            DogLog.log("Vision/" + cam.label + "/Status", cam.status);
+-            DogLog.log("Vision/" + cam.label + "/Accepted", cam.accepted);
++            DogLog.log(key + "Status", cam.status);
++            DogLog.log(key + "Accepted", cam.accepted);
++            DogLog.log(key + "RobotToCamera", cam.robotToCamera);
++            DogLog.log(key + "Connected", connected);
++            DogLog.log(key + "TagCount", (double) cam.tagIds.length);
++            DogLog.log(key + "LatencyMs", cam.latencyMs, "ms");
++            DogLog.log(key + "FPS", cam.fps);
++            DogLog.log(key + "TagIds", cam.tagIds);
++            DogLog.log(key + "TagYawDeg", cam.tagYawDeg, "deg");
++            DogLog.log(key + "TagDistanceM", cam.tagDistanceM, "m");
+         }
+     }
+ 
+diff --git a/src/test/java/frc/robot/subsystems/VisionTest.java b/src/test/java/frc/robot/subsystems/VisionTest.java
+new file mode 100644
+index 0000000..c4a3e00
+--- /dev/null
++++ b/src/test/java/frc/robot/subsystems/VisionTest.java
+@@ -0,0 +1,32 @@
++package frc.robot.subsystems;
++
++import static org.junit.jupiter.api.Assertions.assertArrayEquals;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++import org.junit.jupiter.api.Test;
++
++import edu.wpi.first.math.geometry.Rotation3d;
++import edu.wpi.first.math.geometry.Transform3d;
++import edu.wpi.first.math.util.Units;
++
++/** The match-view tag/mount values: the sign conventions are easy to get backwards. */
++class VisionTest {
++    @Test
++    void tagOnTheLeftHasPositiveYaw() {
++        assertEquals(45, Vision.tagYawDeg(new Transform3d(2, 2, 0.5, new Rotation3d())), 1e-9);
++        assertEquals(-45, Vision.tagYawDeg(new Transform3d(2, -2, 0.5, new Rotation3d())), 1e-9);
++        assertEquals(0, Vision.tagYawDeg(new Transform3d(3, 0, 1, new Rotation3d())), 1e-9);
++    }
++
++    @Test
++    void tagDistanceIgnoresHeight() {
++        assertEquals(5, Vision.tagFloorDistanceM(new Transform3d(3, 4, 2, new Rotation3d())), 1e-9);
++    }
++
++    @Test
++    void mountArrayIsMetersThenDegrees() {
++        var mount = new Transform3d(0.3, -0.1, 0.25,
++                new Rotation3d(0, Units.degreesToRadians(25), Units.degreesToRadians(90)));
++        assertArrayEquals(new double[] {0.3, -0.1, 0.25, 0, 25, 90}, Vision.mountArray(mount), 1e-9);
++    }
++}

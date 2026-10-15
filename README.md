@@ -103,8 +103,8 @@ themselves. Every push to `main` that touches `source/` also redeploys the web v
 |---|---|
 | `source/` | The app itself (one page, shared by the desktop app, the web version and claude.ai). Edit here. |
 | `desktop/` | The Windows app: Electron shell (`main.js`, `preload.js`), installer and auto-update settings (`package.json`). |
-| `robot-code/` | The robot-side telemetry: `MotorTelemetry.java`, `MatchTelemetry.java` (match view: match time, controllers, cameras) and `robot-telemetry.patch` (the changes made on the `claude` branch of 7763-Code-2026), plus `standalone-telemetry/` for projects that don't use DogLog. |
-| `logging-needed/` | What the robot code still has to log for the match view (camera mounts, AprilTags seen, module angles, ...), written to hand straight to Claude. |
+| `robot-code/` | The robot-side telemetry: `MotorTelemetry.java`, `MatchTelemetry.java` (match view: match time, controllers, cameras) and `robot-telemetry.patch` (how 7763-Code-2026 logs all of it, merged on its `claude` branch), plus `standalone-telemetry/` for projects that don't use DogLog. |
+| `logging-needed/` | Everything the match view reads from a robot (camera mounts, AprilTags seen, module angles, ...), written to hand straight to Claude. 7763-Code-2026 already logs all of it. |
 | `tools/` | `fake_robot_nt.py` (a fake robot for testing live mode without hardware) and a sample `.wpilog`. |
 
 ## Building
@@ -199,5 +199,6 @@ python tools/fake_robot_nt.py 120
 ```
 
 Then in the app: Live → Simulation (127.0.0.1) → Connect. Robot simulation from WPILib (Simulate Robot
-Code) works the same way. Robot code in simulation has no cameras, so on 127.0.0.1 the app ignores any camera data it publishes
+Code) works the same way: 7763-Code-2026 (`./gradlew simulateJava`) simulates every motor, swerve modules included, so
+drive, steer and mechanism motors all move while an auto runs. Robot code in simulation has no cameras, so on 127.0.0.1 the app ignores any camera data it publishes
 and works out what each camera would see from the robot's pose instead (match view Setup → Cameras turns this off).

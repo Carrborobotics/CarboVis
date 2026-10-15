@@ -1,7 +1,14 @@
 # What the robot needs to log for the match view
 
-The robot code doesn't log these yet. This file lists exactly what CarboVis's match view (the live viewer)
-reads, so it can be handed to Claude with a prompt like:
+**Status:** 7763-Code-2026 logs all of this on its `claude` branch (commit `26dacea`; the diff is
+`robot-code/robot-telemetry.patch`). It logs the DS and camera keys itself (in `Robot.java` and
+`Vision.java`), so it doesn't use `MatchTelemetry.java`. Its names: cameras `Front` and `Side` (placed from
+the logged `RobotToCamera`); motors `FL drive` ... `BR steer`, `Turret`, `Hood`, `Flywheel L`/`R`, `Kicker`,
+`Floor`, `Intake`, `Rack A`/`B`. Robot simulation (`./gradlew simulateJava`) runs every motor through
+physics, swerve included, so all of it moves on 127.0.0.1 too.
+
+This file lists exactly what CarboVis's match view (the live viewer) reads, so it can be handed to Claude
+for another robot project with a prompt like:
 
 > Add the logging in `logging-needed/match-view-logging.md` to our robot code. Use DogLog. Keep the key
 > names, types, units and sign conventions exactly as written.
@@ -15,7 +22,7 @@ positive (left of center is positive).**
 
 ---
 
-## 1. Cameras: where they're mounted and which AprilTags they see (new)
+## 1. Cameras: where they're mounted and which AprilTags they see
 
 `<cam>` is the camera's name, e.g. `FrontLeft`, `BackRight`. Use the same name for all of a camera's keys.
 
@@ -47,8 +54,7 @@ How to compute them:
 
 ## 2. Camera health (shows each camera green/yellow/red)
 
-Already written in `robot-code/MatchTelemetry.java` (`MatchTelemetry.camera(...)`), but not yet called from
-the robot code.
+`robot-code/MatchTelemetry.java` (`MatchTelemetry.camera(...)`) logs these for a project that doesn't yet.
 
 | Key | Type | What it is |
 |---|---|---|
@@ -67,8 +73,8 @@ the robot code.
 
 ## 4. Match, controllers and power
 
-`DS/*` is already written in `robot-code/MatchTelemetry.java` (`MatchTelemetry.update()`), but not called
-yet. The power and CAN keys are DogLog's built-in extras.
+`robot-code/MatchTelemetry.java` (`MatchTelemetry.update()`) logs `DS/*`. The power and CAN keys are DogLog's
+built-in extras.
 
 | Key | Type | What it is |
 |---|---|---|
@@ -80,8 +86,8 @@ yet. The power and CAN keys are DogLog's built-in extras.
 
 ## 5. Motors and mechanisms
 
-Already written in `robot-code/MotorTelemetry.java` and `robot-code/robot-telemetry.patch` (the `claude`
-branch of 7763-Code-2026). Those still need to be merged into the robot code.
+`robot-code/MotorTelemetry.java` is the same file as 7763-Code-2026's; `robot-code/robot-telemetry.patch` shows
+how it's hooked up (every TalonFX registers when it's created).
 
 | Key | Type | What it is |
 |---|---|---|
