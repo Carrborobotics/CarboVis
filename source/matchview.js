@@ -804,11 +804,12 @@ const MatchView = (() => {
   // Size the window to the screen minus the Driver Station strip at the bottom. Browsers only allow this for
   // app/popup windows (the desktop shortcut opens one); in a normal tab it does nothing.
   function fitWindow(manual) {
+    if (window.carbovis) { window.carbovis.win.fit(cfg.dsHeight); return; } // the desktop app sizes its own window
     try {
       const sx = screen.availLeft || 0, sy = screen.availTop || 0;
       window.moveTo(sx, sy);
       window.resizeTo(screen.availWidth, Math.max(400, screen.availHeight - cfg.dsHeight));
-      if (manual) setTimeout(() => { if (Math.abs(window.outerHeight - (screen.availHeight - cfg.dsHeight)) > 40) api.toast('This window can\'t be resized from the page. Use the "7763 Match View" desktop shortcut, or snap the window by hand.'); }, 400);
+      if (manual) setTimeout(() => { if (Math.abs(window.outerHeight - (screen.availHeight - cfg.dsHeight)) > 40) api.toast('This window can\'t be resized from the page. Use the "CarboVis Match View" shortcut, or snap the window by hand.'); }, 400);
     } catch { /* not allowed */ }
   }
 

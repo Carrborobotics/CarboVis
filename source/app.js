@@ -1278,10 +1278,10 @@
   BUILD.history = () => renderHistory();
   function renderHistory() {
     const root = $('#tab-history'); if (!root) return;
-    if (!S.db) { root.replaceChildren(panel('Match history', null, h('div', { class: 'empty' }, h('b', null, 'History isn\'t available here'), 'Saved match summaries live with this page on claude.ai. Open it there while signed in to save and compare matches.'))); return; }
+    if (!S.db && !Library.enabled) { root.replaceChildren(panel('Match history', null, h('div', { class: 'empty' }, h('b', null, 'History isn\'t available here'), 'Saved match summaries live with this page on claude.ai. Open it there while signed in to save and compare matches.'))); return; }
     if (S.history == null) { root.replaceChildren(panel('Match history', null, h('p', { class: 'hint' }, 'Loading saved matches…'))); return; }
     const docs = [...S.history].sort((a, b) => (a.date || '').localeCompare(b.date || '') || String(a.event).localeCompare(String(b.event)) || (parseInt(String(a.match).replace(/\D/g, '')) || 0) - (parseInt(String(b.match).replace(/\D/g, '')) || 0) || (a.savedAt || '').localeCompare(b.savedAt || ''));
-    if (!docs.length) { root.replaceChildren(panel('Match history', null, h('div', { class: 'empty' }, h('b', null, 'No matches saved yet'), 'Open a .wpilog, then press Save to history. Each save stores the match summary (not the log itself), so the team can compare matches across an event.'))); return; }
+    if (!docs.length) { root.replaceChildren(panel('Match history', null, h('div', { class: 'empty' }, h('b', null, 'No matches saved yet'), S.db ? 'Open a .wpilog, then press Save to history. Each save stores the match summary (not the log itself), so the team can compare matches across an event.' : 'Every log in the match library (this computer, the team library, the driver station) shows up here, so you can compare matches across an event.'))); return; }
     const motorNames = [...new Set(docs.flatMap(d => Object.keys(d.motors || {})))].sort();
     if (!S.histMotor || !motorNames.includes(S.histMotor)) S.histMotor = motorNames[0] || '';
     const [mk, mlabel, munit, mdec] = METRICS.find(m => m[0] === S.histMetric) || METRICS[0];
@@ -1304,7 +1304,7 @@
         h('td', null, hot ? `${hot[0]} ${fmt(hot[1].tempMax, 0)}°C` : '—'), h('td', { class: 'r' }, d.brownouts ?? '—'), h('td', { class: 'r' }, d.commsDrops ?? '—'),
         h('td', null, d.critCount ? h('span', { class: 'pill' }, h('span', { class: 'dot crit' }), `${d.critCount} critical`) : d.warnCount ? h('span', { class: 'pill' }, h('span', { class: 'dot warn' }), `${d.warnCount} warning`) : h('span', { class: 'pill' }, h('span', { class: 'dot ok' }), 'Clean')), h('td', null, del));
     });
-    const table = panel('Saved matches', `${docs.length} saved · newest first · open the .wpilog again for full detail`,
+    const table = panel('Saved matches', S.db ? `${docs.length} saved · newest first · open the .wpilog again for full detail` : `${docs.length} in the library · newest first · open one from Logs for full detail`,
       h('div', { class: 'tscroll' }, h('table', { class: 'static' }, h('thead', null, h('tr', null, ...['Match', 'Event', 'Date'].map(x => h('th', null, x)), ...['Start V', 'Min V', 'Energy Wh', 'Peak A'].map(x => h('th', { class: 'r' }, x)), h('th', null, 'Hottest motor'), h('th', { class: 'r' }, 'Brownouts'), h('th', { class: 'r' }, 'Comms drops'), h('th', null, 'Flags'), h('th', null, ''))), h('tbody', null, ...rows))));
     root.replaceChildren(trend, table);
   }
@@ -1385,7 +1385,7 @@
         h('label', { style: 'display:inline-flex;gap:6px;align-items:center;font-size:12.5px' }, h('input', { type: 'checkbox', id: 'liveFollow', checked: liveState.follow, onchange: e => { liveState.follow = e.target.checked; if (live) live.follow = liveState.follow; } }), 'Follow live'),
         h('select', { class: 'sel', id: 'liveSpan', 'aria-label': 'Window', onchange: e => { liveState.span = +e.target.value; store.set('7763.liveSpan', liveState.span); if (live) live.span = liveState.span; } }, ...[15, 30, 60, 150].map(v => h('option', { value: v, selected: v === liveState.span }, `last ${v} s`)))),
       h('div', { class: 'live-status' }, h('span', { class: 'live-dot ' + (st === 'connected' ? 'on' : on ? 'wait' : '') }), status),
-      h('p', { class: 'hint', style: 'margin:0' }, 'Reads NetworkTables on port 5810. Nothing is sent to the robot. Keeps the last 10 minutes. "Simulated match" runs a made-up robot inside the app instead (address: sim).'));
+      h('p', { class: 'hint', style: 'margin:0' }, `Reads NetworkTables on port 5810. Nothing is sent to the robot. Shows the last 10 minutes${Library.desktop ? ' and records everything to the match library (Logs)' : ''}. "Simulated match" runs a made-up robot inside the app instead (address: sim).`));
   }
   function startLive(host) {
     stopLive();
@@ -1393,11 +1393,13 @@
     live = { log, loaded: false, follow: liveState.follow, span: liveState.span, seen: -1, lastAnalyze: 0 };
     log.serverNow = () => live && live.client ? live.client.serverNowUs() : null;
     const Client = isSim(host) ? FakeMatch.Client : NT4.Client; // the simulated match runs in the page, no robot needed
-    live.client = new Client({ host, onValue: (topic, us, value) => Live.add(log, topic, us, value), onStatus: () => { setLiveIndicator(); if (!$('#livePanel').hidden) renderLivePanelSoon(); if (S.isLive) renderHeader(); } });
+    const serverNow = () => (live && live.client ? live.client.serverNowUs() : null);
+    live.client = new Client({ host, onValue: (topic, us, value) => { Live.add(log, topic, us, value); Library.liveValue(topic, us, value, serverNow); },
+      onStatus: ({ state }) => { Library.liveStatus(state, host); setLiveIndicator(); if (!$('#livePanel').hidden) renderLivePanelSoon(); if (S.isLive) renderHeader(); } });
     live.client.connect();
     setLiveIndicator();
   }
-  function stopLive() { if (live && live.client) live.client.disconnect(); if (live) live.client = null; setLiveIndicator(); if (S.isLive) renderHeader(); }
+  function stopLive() { if (live && live.client) live.client.disconnect(); if (live) live.client = null; Library.liveStatus('stopped'); setLiveIndicator(); if (S.isLive) renderHeader(); }
   let panelT = 0; function renderLivePanelSoon() { clearTimeout(panelT); panelT = setTimeout(renderLivePanel, 150); }
   $('#liveBtn').onclick = () => { const p = $('#livePanel'); p.hidden = !p.hidden; $('#liveBtn').setAttribute('aria-expanded', String(!p.hidden)); if (!p.hidden) renderLivePanel(); };
   document.addEventListener('pointerdown', e => { const p = $('#livePanel'); if (!p.hidden && !e.target.closest('.live-wrap')) { p.hidden = true; $('#liveBtn').setAttribute('aria-expanded', 'false'); } });
@@ -1472,18 +1474,23 @@
     S.sig = liveSig();
     renderHeader(); updateSaveBtn(); showTab(S.tab);
   }
+  function openBuffer(buf, name) {
+    try {
+      const log = Core.parseWpilog(buf, name);
+      if (!log.entries.size) throw new Error('The file opened but contains no entries.');
+      if (matchView.isOpen()) matchView.close();
+      loadLog(log, false);
+      toast(`Opened ${name}: ${log.entries.size} signals, ${log.records.toLocaleString()} records`);
+      return true;
+    } catch (err) { showError(`Couldn't read ${name}. ${err.message}`); console.error(err); return false; }
+  }
   async function openFile(file) {
     if (!file) return;
     if (!/\.wpilog$/i.test(file.name)) { showError(`${file.name} isn't a .wpilog file. Robot logs are named like FRC_20260411_183207.wpilog.`); return; }
     const busy = h('div', { class: 'busy' }, `Reading ${file.name}…`); document.body.append(busy);
-    try {
-      const buf = await file.arrayBuffer();
-      await new Promise(r => setTimeout(r, 20));
-      const log = Core.parseWpilog(buf, file.name);
-      if (!log.entries.size) throw new Error('The file opened but contains no entries.');
-      loadLog(log, false);
-      toast(`Opened ${file.name}: ${log.entries.size} signals, ${log.records.toLocaleString()} records`);
-    } catch (err) { showError(`Couldn't read ${file.name}. ${err.message}`); console.error(err); }
+    const buf = await file.arrayBuffer();
+    await new Promise(r => setTimeout(r, 20));
+    if (openBuffer(buf, file.name)) Library.adopt(file.name, buf); // the desktop app keeps a copy in its library
     busy.remove();
   }
   $('#openBtn').onclick = () => $('#fileIn').click();
@@ -1501,7 +1508,7 @@
   window.addEventListener('keydown', e => {
     if (!S.log || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || '')) return;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { const step = (S.view.t1 - S.view.t0) / 200 * (e.shiftKey ? 10 : 1); setCursor(clamp((S.cursor ?? (S.view.t0 + S.view.t1) / 2) + (e.key === 'ArrowLeft' ? -step : step), S.view.t0, S.view.t1)); e.preventDefault(); }
-    if (e.key === 'Escape') { if (matchView.isOpen()) matchView.close(); else setCursor(null); }
+    if (e.key === 'Escape') { if (Library.isOpen()) Library.close(); else if (matchView.isOpen()) matchView.close(); else setCursor(null); }
     if ((e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && !e.altKey) { if (matchView.isOpen()) matchView.close(); else matchView.open({ connect: true, fit: true }); }
   });
 
@@ -1523,6 +1530,20 @@
   });
   $('#mvBtn').onclick = () => matchView.open({ connect: true, fit: true });
 
+  // ---------- LIBRARY ----------
+  // Logs on this computer, the team's GitHub library and nearby computers (library.js).
+  $('#libBtn').onclick = () => Library.open();
+  const libReady = Library.init({
+    h, fmt, toast, openBuffer, simHost: FakeMatch.HOST, limits: () => S.limits,
+    onHistory: docs => { if (S.db) return; S.history = docs; renderTabs(); if (S.built.history) renderHistory(); },
+    onUpdate: u => { const b = $('#updBtn'); b.hidden = u.state !== 'ready'; b.title = `CarboVis ${u.version} is downloaded. Restart to install it now, or it installs the next time CarboVis closes.`; },
+  });
+  if (window.carbovis) {
+    $('#updBtn').onclick = () => window.carbovis.update.install();
+    window.carbovis.on('open-log', async name => { const buf = await window.carbovis.lib.read(name); openBuffer(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), name); });
+    window.carbovis.on('open-matchview', () => matchView.open({ connect: true, fit: true }));
+  }
+
   window.__frc = { S, Core, matchView }; // for debugging from the browser console
   // ---------- boot ----------
   readColors();
@@ -1533,5 +1554,7 @@
     try { loadLog(Core.parseWpilog(Sample.generate(), Sample.fileName), true); }
     catch (err) { showError('The sample match failed to load: ' + err.message); console.error(err); }
     if (hash === 'matchview') matchView.open({ connect: true, fit: true });
+    // phones and other computers come here for the team's logs: show them first
+    else if (!hash && !window.carbovis && Library.enabled) libReady.then(() => Library.open());
   }, 0);
 })();

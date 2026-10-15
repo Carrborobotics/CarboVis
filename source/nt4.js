@@ -38,8 +38,11 @@ const NT4 = (() => {
       ws.onopen = () => {
         this.retryMs = 500; this.lastRx = performance.now();
         this.status('connected', ws.protocol);
-        this.sendJson([{ method: 'subscribe', params: { topics: this.o.subscribe, subuid: 1, options: { prefix: true, periodic: this.o.periodic, all: false } } }]);
+        // Sync clocks first, so the server time is known before any values arrive (the recorder places retained
+        // values at "now"). Subscribe on the first answer, or after 500 ms if the server doesn't answer pings.
+        this.subscribed = false;
         this.ping();
+        this.timers.push(setTimeout(() => this.subscribe(), 500));
         // browsers can't send WebSocket PINGs, so timestamp messages double as the aliveness check (1 s / 3 s per spec)
         this.timers.push(setInterval(() => this.ping(), 1000));
         this.timers.push(setInterval(() => { if (performance.now() - this.lastRx > 3000) { try { ws.close(); } catch { /* ignore */ } } }, 500));
@@ -57,6 +60,11 @@ const NT4 = (() => {
         this.retryT = setTimeout(() => this.open(), this.retryMs);
         this.retryMs = Math.min(3000, this.retryMs * 2);
       };
+    }
+    subscribe() {
+      if (this.subscribed) return;
+      this.subscribed = true;
+      this.sendJson([{ method: 'subscribe', params: { topics: this.o.subscribe, subuid: 1, options: { prefix: true, periodic: this.o.periodic, all: false } } }]);
     }
     sendJson(msgs) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(msgs)); }
     ping() {
@@ -91,6 +99,7 @@ const NT4 = (() => {
             const rtt = nowUs() - Number(value);
             this.rttMs = rtt / 1000;
             if (rtt < this.bestRtt) { this.bestRtt = rtt; this.offsetUs = Number(ts) + rtt / 2 - nowUs(); }
+            this.subscribe();
             this.o.onStatus && this.o.onStatus({ state: this.state, detail: this.ws && this.ws.protocol, rttMs: this.rttMs });
             continue;
           }

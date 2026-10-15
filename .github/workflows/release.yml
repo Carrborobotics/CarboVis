@@ -1,0 +1,31 @@
+# Push a tag like v1.2.0 to build the Windows installer and publish it as a GitHub Release.
+# Installed copies of CarboVis find the new release on their own and update the next time they close.
+name: Release desktop app
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: python source/build.py
+      - name: Build and publish installer
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm ci
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npx electron-builder --win --publish always
