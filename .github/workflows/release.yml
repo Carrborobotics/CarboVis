@@ -20,12 +20,21 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: python source/build.py
-      - name: Build and publish installer
+      - name: Build installer
         working-directory: desktop
+        shell: bash
+        run: |
+          npm ci
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npx electron-builder --win --publish never
+      # One release with all three files. (electron-builder's own publishing can race and create two releases.)
+      # latest.yml is what installed copies read to find the update.
+      - name: Publish release
+        working-directory: desktop/dist
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npm ci
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
-          npx electron-builder --win --publish always
+          v="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --title "CarboVis $v" --generate-notes --latest \
+            "CarboVis-Setup-$v.exe" "CarboVis-Setup-$v.exe.blockmap" latest.yml
