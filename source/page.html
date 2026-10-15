@@ -59,6 +59,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .chip.red::before, .chip.blue::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--crit); }
 .chip.blue::before { background: var(--s1); }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+select.sel.match-sel { height: 34px; max-width: 300px; min-width: 0; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); font-weight: 500; }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--surface); cursor: pointer; font-weight: 500; white-space: nowrap; }
 .btn:hover { background: var(--surface-2); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -323,8 +324,38 @@ body.mv-on > .top, body.mv-on > main { display: none; }
 .mv-batt.lvl-major { animation: mv-blink-bg 1s infinite; } .mv-batt.lvl-major .k { color: inherit; }
 .mv-btns { display: flex; flex-direction: column; gap: 4px; justify-content: center; flex: none; }
 .mv-btns .btn svg { width: 14px; height: 14px; }
-/* body */
-.mv-main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(240px, .78fr); gap: 6px; min-height: 0; }
+/* body: the layout follows the match. Before it, and in auto, the field leads (start position, auto path) and
+   the cameras get bigger; in teleop the shooter and hopper lead and the controllers get bigger. */
+.mv-main { position: relative; display: grid; gap: 6px; min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.05fr) minmax(250px, .8fr); grid-template-rows: minmax(0, 1.12fr) minmax(0, .88fr);
+  grid-template-areas: "shooter intake drive side" "field field drive side"; }
+.mv.mv-auto .mv-main, .mv.mv-pre .mv-main { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "field field drive side" "shooter intake drive side"; }
+.mv-main > [data-mech="drive"] { grid-area: drive; } .mv-main > [data-mech="shooter"] { grid-area: shooter; } .mv-main > [data-mech="intake"] { grid-area: intake; }
+.mv-main > [data-mech="field"] { grid-area: field; } .mv-main > .mv-side { grid-area: side; }
+.mv-card { --focus: transparent; box-shadow: inset 0 0 0 2px var(--focus); }
+.mv.mv-auto [data-mech="field"], .mv.mv-auto [data-mech="drive"] { --focus: color-mix(in srgb, var(--s7) 55%, transparent); }
+.mv.mv-tele [data-mech="shooter"], .mv.mv-tele [data-mech="intake"] { --focus: color-mix(in srgb, var(--accent) 45%, transparent); }
+.mv.mv-auto .mv-ic[data-ic^="cam"], .mv.mv-tele .mv-ic[data-ic^="js"] { flex-grow: 1.5; max-width: 128px; }
+.mv.mv-auto .mv-ic[data-ic^="cam"] svg, .mv.mv-tele .mv-ic[data-ic^="js"] svg { width: 30px; height: 30px; }
+.mv.mv-auto .mv-ic[data-ic^="cam"] .val, .mv.mv-tele .mv-ic[data-ic^="js"] .val { font-size: 13px; font-weight: 600; }
+/* pre-match: comms, controllers, cameras, CAN and battery as big tiles, plus a ready / not ready call */
+.mv.mv-pre .mv-icons { gap: 6px; padding: 6px; }
+.mv.mv-pre .mv-ic { max-width: 170px; min-width: 76px; gap: 4px; padding: 8px 6px; border: 1px solid var(--line); }
+.mv.mv-pre .mv-ic svg { width: 44px; height: 44px; } .mv.mv-pre .mv-ic .lab { font-size: 13px; } .mv.mv-pre .mv-ic .val { font-size: 17px; font-weight: 600; }
+.mv.mv-pre .mv-batt b { font-size: 40px; } .mv.mv-pre .mv-timer { display: none; }
+.mv-ready { display: none; font: 700 22px/1 var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 8px 12px; border-radius: 6px; white-space: nowrap; }
+.mv.mv-pre .mv-ready { display: block; } .mv-ready.ok { background: var(--good); color: #fff; } .mv-ready.bad { animation: mv-blink-bg 1s infinite; }
+.mv.mv-pre .mv-phase { flex-direction: column; justify-content: center; align-items: stretch; gap: 6px; }
+/* big alerts over the top of the work area */
+.mv-alerts { position: absolute; left: 0; right: 0; top: 10px; z-index: 4; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 8px; padding: 0 12px; pointer-events: none; }
+.mv-alerts:empty { display: none; }
+.mv-alert { display: grid; gap: 2px; padding: 10px 22px 12px; border-radius: 10px; max-width: min(640px, 100%); text-align: center; box-shadow: 0 10px 34px rgba(0,0,0,.35); border: 3px solid #fff; }
+.mv-alert b { font: 700 40px/1.05 var(--f-display); letter-spacing: .05em; text-transform: uppercase; }
+.mv-alert span { font: 600 15px/1.25 var(--f-body); }
+.mv-alert.lvl-major { animation: mv-alert 1s infinite; } .mv-alert.lvl-warn { background: var(--warn); color: #111; }
+.mv-alerts.n2 .mv-alert b { font-size: 34px; } .mv-alerts.n3 .mv-alert b { font-size: 28px; }
+.mv-alerts.n4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); } .mv-alerts.n4 .mv-alert { max-width: none; padding: 8px 14px 9px; } .mv-alerts.n4 .mv-alert b { font-size: 24px; } .mv-alerts.n4 .mv-alert span { font-size: 13px; }
+@keyframes mv-alert { 0%, 59% { background: var(--mv-bad); color: #fff; } 60%, 100% { background: #7a1414; color: #fff; } }
 .mv-card { display: flex; flex-direction: column; min-height: 0; padding: 6px 8px; border-top: 4px solid var(--line-2); }
 .mv-card.lvl-ok { border-top-color: var(--mv-ok); } .mv-card.lvl-warn { border-top-color: var(--mv-warn); } .mv-card.lvl-fault { border-top-color: var(--mv-bad); }
 .mv-card.lvl-major { border-top-color: var(--mv-bad); }
@@ -357,6 +388,23 @@ body.mv-on > .top, body.mv-on > main { display: none; }
 .mv-svg .st.f.lvl-fault, .mv-svg .st.f.lvl-major { fill: var(--mv-bad); } .mv-svg .st.s.lvl-fault, .mv-svg .st.s.lvl-major { stroke: var(--mv-bad); }
 .mv-svg .st.lvl-major { animation: mv-blink 1s infinite; }
 .mv-svg .st.f.lvl-none { fill: var(--surface-2); stroke: var(--line-2); stroke-dasharray: 3 3; } .mv-svg .st.s.lvl-none { opacity: .4; }
+/* field */
+.mv-svg .carpet { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 2; }
+.mv-svg .midline { stroke: var(--line-2); stroke-width: 2; stroke-dasharray: 10 8; }
+.mv-svg .wall { stroke-width: 10; } .mv-svg .wall.blue { stroke: #2a78d6; } .mv-svg .wall.red { stroke: #d03b3b; }
+.mv-svg .hub path { fill: var(--surface); stroke-width: 4; } .mv-svg .hub.blue path { stroke: #2a78d6; } .mv-svg .hub.red path { stroke: #d03b3b; }
+.mv-svg .ftag { fill: var(--ink-2); }
+.mv-svg .zone-l { font: 700 20px var(--f-display); letter-spacing: .1em; opacity: .5; } .mv-svg .zone-l.blue { fill: #2a78d6; } .mv-svg .zone-l.red { fill: #d03b3b; }
+.mv-svg .trail { fill: none; stroke: var(--accent); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; opacity: .55; }
+.mv-svg .fbot { fill: var(--surface); stroke: var(--ink-2); stroke-width: 7; } .mv-svg .fbot.red { stroke: #d03b3b; } .mv-svg .fbot.blue { stroke: #2a78d6; }
+.mv-svg .fdir { fill: none; stroke: var(--ink); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.mv-svg .aim { stroke: var(--accent); stroke-width: 4; stroke-dasharray: 10 7; stroke-linecap: round; }
+.mv-svg .fnone { fill: var(--muted); }
+/* hopper */
+.mv-svg .tray { fill: var(--surface); stroke: var(--line-2); stroke-width: 1.5; }
+.mv-svg .hopper { fill: color-mix(in srgb, var(--surface-2) 85%, transparent); }
+.mv-svg .ball { fill: color-mix(in srgb, var(--warn) 55%, var(--surface)); stroke: var(--warn); stroke-width: 1.5; opacity: .6; }
+.mv-svg .gear-l { font: 700 12px var(--f-body); fill: #fff; pointer-events: none; }
 /* chips */
 .mv-svg .chip { cursor: help; }
 .mv-svg .chip-bg { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 1.5; }
@@ -411,9 +459,7 @@ body.mv-on > .top, body.mv-on > main { display: none; }
 .mv-foot .sim-next { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 12px; padding: 3px 8px; border-radius: var(--r); background: var(--surface-2); }
 .mv-foot .btn.sim { border-color: var(--accent); color: var(--accent); }
 .mv-foot .hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.mv-banner { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 3; padding: 14px 28px; border-radius: 10px; font: 700 30px/1.1 var(--f-display); letter-spacing: .06em; text-transform: uppercase; box-shadow: 0 10px 40px rgba(0,0,0,.3); pointer-events: none; text-align: center; }
-.mv-banner small { display: block; font: 500 13px var(--f-body); letter-spacing: 0; text-transform: none; margin-top: 4px; }
-.mv-banner.lvl-major { animation: mv-blink-bg 1s infinite; } .mv-banner.lvl-warn { background: var(--warn); color: #111; }
+.mv-foot .mv-match { height: 28px; max-width: 280px; min-width: 0; flex: 0 1 auto; font-size: 12.5px; }
 .mv-tip { position: absolute; z-index: 5; max-width: 300px; }
 .mv-tip .note { font-size: 12px; margin-top: 3px; padding-left: 8px; border-left: 3px solid var(--line-2); }
 .mv-tip .note.lvl-ok { border-color: var(--mv-ok); } .mv-tip .note.lvl-warn { border-color: var(--mv-warn); } .mv-tip .note.lvl-fault, .mv-tip .note.lvl-major { border-color: var(--mv-bad); }
@@ -429,14 +475,23 @@ body.mv-on > .top, body.mv-on > main { display: none; }
 .mv-setup-grid fieldset { border: 1px solid var(--line); border-radius: var(--r); padding: 6px 8px 2px; margin: 0 0 8px; }
 .mv-setup-grid legend { font-size: 12px; font-weight: 600; padding: 0 4px; }
 .mv-two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-/* smaller windows: narrower side column, then stack it under the mechanisms */
+/* short windows (a 768 px laptop screen above the Driver Station): one row of mechanisms, the field as a
+   mini-map above the side column */
+@media (max-height: 760px) {
+  .mv-main, .mv.mv-auto .mv-main, .mv.mv-pre .mv-main { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 1fr) minmax(250px, .85fr); grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "drive shooter intake field" "drive shooter intake side"; }
+  .mv-main > [data-mech="field"] .mv-svg { flex: none; height: auto; aspect-ratio: 2 / 1; }
+  .mv-side { grid-template-rows: auto minmax(0, 1fr); overflow: hidden; } .mv-power { display: none; }
+  .mv.mv-pre .mv-ic svg { width: 32px; height: 32px; } .mv.mv-pre .mv-ic .val { font-size: 14px; } .mv.mv-pre .mv-batt b { font-size: 30px; }
+  .mv-alert b { font-size: 30px; } .mv-alerts.n2 .mv-alert b { font-size: 26px; } .mv-alerts.n3 .mv-alert b { font-size: 22px; }
+}
 @media (max-width: 1180px) {
-  .mv-main { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr) 205px; }
+  .mv-main, .mv.mv-auto .mv-main, .mv.mv-pre .mv-main { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) 215px; }
   .mv-ic { min-width: 46px; } .mv-ic .lab { font-size: 9px; } .mv-timer { font-size: 34px; } .mv-batt .spark { display: none; } .mv-id { max-width: 150px; }
 }
 @media (max-width: 900px) {
-  .mv-main { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, .62fr); }
-  .mv-side { grid-column: 1 / -1; grid-template-columns: 1fr 1fr 1.4fr; grid-template-rows: minmax(0, 1fr); }
+  .mv-main, .mv.mv-auto .mv-main, .mv.mv-pre .mv-main { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr) minmax(0, .7fr);
+    grid-template-areas: "drive shooter intake" "field field side"; }
 }
 @media (max-height: 560px) { .mv-id span { display: none; } .mv-ic svg { width: 20px; height: 20px; } .mv-timer { font-size: 34px; } .mv-batt b { font-size: 24px; } .mv-kv { font-size: 11.5px; } .mv-card h2 { font-size: 14px; } }
 @media (prefers-reduced-motion: reduce) { .mech-key .k-fault, .mech-key .k-can { animation: none; } }
@@ -490,6 +545,7 @@ body.mv-on > .top, body.mv-on > main { display: none; }
   .brand span { display: none; }
   .top { position: static; } .legend-phase { display: none; }
   .actions .btn { padding: 0 10px; }
+  .actions { width: 100%; } .match-sel { flex: 1 1 100%; max-width: none; }
   #mvBtn, .live-wrap { display: none; }
 }
 </style>
@@ -499,6 +555,7 @@ body.mv-on > .top, body.mv-on > main { display: none; }
     <div class="brand"><b>7763</b><span>Match logs</span></div>
     <div class="match" id="matchHead"></div>
     <div class="actions">
+      <select class="sel match-sel" id="matchSel" aria-label="Match" title="Pick a match: recent ones from the library, or a demo"></select>
       <button class="btn primary" id="updBtn" hidden>Restart to update</button>
       <button class="btn" id="libBtn" title="Match logs on this computer, the team library and nearby computers">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 3.5h4l1.5 1.5h5.5v7.5h-11z"/></svg>Logs<span class="rec-dot" id="libRec" hidden title="Recording"></span></button>

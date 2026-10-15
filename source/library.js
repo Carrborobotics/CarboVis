@@ -16,6 +16,7 @@ const Library = (() => {
   const MAX_UPLOAD = 95e6; // GitHub's blob limit is 100 MB
 
   let api, h, fmt, toast;
+  let lists = Promise.resolve(); // first load of the team / hub lists
   const cfg = { repo: DEFAULT_REPO, branch: DEFAULT_BRANCH, autoUpload: true, record: 'enabled' };
   let token = '';
   const st = { open: false, view: 'team', local: null, team: null, teamErr: '', repo: null, peers: [], peerLogs: new Map(), hub: null, filter: '', busy: new Map(), confirm: null, settings: false, info: null, lan: null, update: null, summarizing: false };
@@ -50,7 +51,7 @@ const Library = (() => {
     const headers = { Accept: 'application/vnd.github+json', ...(opts.headers || {}) };
     if (token) headers.Authorization = `Bearer ${token}`;
     const body = opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body;
-    const r = await fetch(GH + path, { method: opts.method || 'GET', headers, body, cache: 'no-store' });
+    const r = await fetch(GH + path, { method: opts.method || 'GET', headers, body, cache: 'no-store', signal: opts.method && opts.method !== 'GET' ? undefined : AbortSignal.timeout(15000) });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       const limited = r.status === 403 && r.headers.get('x-ratelimit-remaining') === '0';
@@ -198,6 +199,7 @@ const Library = (() => {
     for (const l of st.team || []) add(l.name, l.summary);
     for (const l of (st.hub && st.hub.logs) || []) add(l.name, l.summary);
     api.onHistory([...docs.values()]);
+    api.onLists && api.onLists();
   }
 
   // ---------------- uploading ----------------
@@ -279,7 +281,10 @@ const Library = (() => {
     if (host != null && host !== rec.host) { if (rec.cur) recFinish('host'); rec.host = host; rec.last.clear(); }
     if (state === 'connected') { rec.lostAt = 0; rec.checkClock = true; }
     else if (state === 'stopped') { rec.lostAt = 0; if (rec.cur) recFinish('stopped'); rec.last.clear(); rec.host = null; }
-    else if (!rec.lostAt) rec.lostAt = Date.now(); // comms drop: keep the file open in case it comes back
+    else if (!rec.lostAt) { // comms drop: keep the file open in case it comes back
+      rec.lostAt = Date.now();
+      if (rec.cur) rec.cur.commsLost();
+    }
     renderRecLine();
   }
   function recTick() {
@@ -310,13 +315,38 @@ const Library = (() => {
   }
 
   // ---------------- opening ----------------
-  async function openItem(it) {
+  async function openItem(it, opts) {
     const busy = h('div', { class: 'busy' }, `Opening ${it.title}…`); document.body.append(busy);
+    let ok = false;
     try {
       const buf = it.src === 'local' ? toAB(await desk.lib.read(it.name)) : it.src === 'team' ? await teamRead(it.entry) : await lanRead(it.base, it.name);
-      if (api.openBuffer(buf, it.name, it.src === 'local' ? 'local' : 'remote')) close();
+      if (api.openBuffer(buf, it.name, opts)) { close(); ok = true; }
     } catch (err) { toast(`Couldn't open ${it.name}: ${err.message}`); console.error(err); }
     busy.remove();
+    return ok;
+  }
+
+  // ---------------- the match menu (header) and opening the latest match ----------------
+  // Every log we can see, one per name, newest match first. Local copies first: they open without a download.
+  function allItems() {
+    const out = new Map();
+    const push = it => { if (!out.has(it.name)) out.set(it.name, it); };
+    for (const f of st.local || []) push(itemOf('local', f.name, f.size, f.meta.summary, { file: f, mtime: f.mtime }));
+    for (const l of (st.hub && st.hub.logs) || []) push(itemOf('hub', l.name, l.size, l.summary, { base: '', mtime: l.mtime }));
+    for (const l of st.team || []) push(itemOf('team', l.name, l.size, l.summary, { entry: l, mtime: l.uploadedAt }));
+    return [...out.values()].sort((a, b) => b.sortKey.localeCompare(a.sortKey) || a.name.localeCompare(b.name));
+  }
+  const keyOf = it => `${it.src}:${it.name}`;
+  function recent(n = 15) {
+    return allItems().slice(0, n).map(it => ({ key: keyOf(it), name: it.name, title: it.title, date: it.date, summary: it.summary, src: it.src }));
+  }
+  function openKey(key) { const it = allItems().find(x => keyOf(x) === key); return it ? openItem(it) : Promise.resolve(false); }
+  // Opens the newest match there is. Waits for the team library at most waitMs (a laptop at the field has no
+  // internet), then settles for what this computer has. False when there's nothing to open.
+  async function openLatest(waitMs = 4000) {
+    await Promise.race([lists, new Promise(r => setTimeout(r, waitMs))]);
+    const it = allItems()[0];
+    return it ? openItem(it, { auto: true }) : false;
   }
   async function saveLocal(it) {
     st.busy.set(it.name, 'Saving…'); render();
@@ -531,11 +561,10 @@ const Library = (() => {
     } else {
       try { token = localStorage.getItem('carbovis.token') || ''; } catch { /* none */ }
     }
-    if (LAN) refreshHub();
-    if (cfg.repo) refreshTeam();
+    lists = Promise.all([LAN ? refreshHub() : null, cfg.repo ? refreshTeam() : null]);
     return { enabled: true };
   }
 
-  return { init, open, close, adopt, liveValue, liveStatus, codec: { gzip, gunzip, b64 }, isOpen: () => st.open, get enabled() { return ENABLED; }, get desktop() { return !!desk; }, get recording() { return !!rec.cur; }, nameInfo };
+  return { init, open, close, adopt, recent, openKey, openLatest, liveValue, liveStatus, codec: { gzip, gunzip, b64 }, isOpen: () => st.open, get enabled() { return ENABLED; }, get desktop() { return !!desk; }, get recording() { return !!rec.cur; }, nameInfo };
 })();
 if (typeof module !== 'undefined') module.exports = Library;

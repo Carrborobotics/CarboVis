@@ -20,9 +20,11 @@ const MatchView = (() => {
   const MOD_NAME = { FL: 'Front left', FR: 'Front right', BL: 'Back left', BR: 'Back right' };
   const SLOTS = {
     drive: MODS.flatMap(m => [{ id: m + 'd', label: `${MOD_NAME[m]} drive`, short: 'D' }, { id: m + 's', label: `${MOD_NAME[m]} steer`, short: 'S' }]),
-    shooter: [{ id: 'turret', label: 'Turret', short: 'TUR' }, { id: 'hood', label: 'Hood', short: 'HOOD' }, { id: 'kicker', label: 'Kicker / feeder', short: 'KICK' },
+    shooter: [{ id: 'turret', label: 'Turret', short: 'TUR' }, { id: 'hood', label: 'Hood', short: 'HOOD' },
       { id: 'fw1', label: 'Flywheel 1', short: 'FW1' }, { id: 'fw2', label: 'Flywheel 2', short: 'FW2' }, { id: 'fw3', label: 'Flywheel 3', short: 'FW3' }, { id: 'fw4', label: 'Flywheel 4', short: 'FW4' }],
-    intake: [{ id: 'intake', label: 'Intake roller', short: 'INTAKE' }, { id: 'deploy', label: 'Intake deploy', short: 'DEPLOY' }, { id: 'idx1', label: 'Indexer 1', short: 'INDEX 1' }, { id: 'idx2', label: 'Indexer 2', short: 'INDEX 2' }],
+    // one motor drives both intake rollers, one the roller floor, two the rack that slides the hopper out, one the kicker
+    intake: [{ id: 'intake', label: 'Intake rollers', short: 'INTAKE' }, { id: 'floor', label: 'Roller floor', short: 'FLOOR' },
+      { id: 'rackL', label: 'Rack left', short: 'RACK L' }, { id: 'rackR', label: 'Rack right', short: 'RACK R' }, { id: 'kicker', label: 'Kicker', short: 'KICKER' }],
   };
   const ALL_SLOTS = Object.values(SLOTS).flat();
   const slotDef = id => ALL_SLOTS.find(s => s.id === id);
@@ -45,7 +47,7 @@ const MatchView = (() => {
     const take = (id, n) => { if (n && !used.has(n) && !out[id]) { out[id] = n; used.add(n); } };
     for (const n of names) {
       const tk = tokens(n), flat = tk.join('');
-      if (/turret|hood|flywheel|shoot|intake|index|kick|feed/.test(flat)) continue;
+      if (/turret|hood|flywheel|shoot|intake|index|kick|feed|floor|rack|roller|hopper/.test(flat)) continue;
       const steer = /steer|turn|azimuth|angle|rotat/.test(flat), drive = /drive|drv|wheel/.test(flat);
       if (!steer && !drive) continue;
       const m = moduleOf(tk);
@@ -56,9 +58,12 @@ const MatchView = (() => {
     for (const [n, f] of rest()) if (/hood/.test(f)) take('hood', n);
     for (const [n, f] of rest()) if (/kick|feed|accel|transfer/.test(f)) take('kicker', n);
     for (const [n, f] of rest()) if (/flywheel|shoot|launch/.test(f)) take(['fw1', 'fw2', 'fw3', 'fw4'].find(s => !out[s]) || 'x', n);
-    for (const [n, f] of rest()) if (/rack|pivot|deploy|extend|wrist|intakearm/.test(f)) take('deploy', n);
+    // the hopper rack's two motors: a name that says left/right goes to that side, the rest fill in
+    const side = n => { const tk = tokens(n); return tk.some(t => t === 'left' || t === 'l') ? 'rackL' : tk.some(t => t === 'right' || t === 'r') ? 'rackR' : ''; };
+    const racks = rest().filter(([, f]) => /rack|extend|slide|telescop|deploy|pivot/.test(f)).sort((a, b) => !side(a[0]) - !side(b[0]));
+    for (const [n] of racks) take(side(n) && !out[side(n)] ? side(n) : !out.rackL ? 'rackL' : 'rackR', n);
+    for (const [n, f] of rest()) if (/floor|index|spindex|hopper|conveyor|belt|serial|tower|agitat|funnel/.test(f)) take('floor', n);
     for (const [n, f] of rest()) if (/intake|roller/.test(f)) take('intake', n);
-    for (const [n, f] of rest()) if (/index|spindex|hopper|conveyor|belt|serial|tower|agitat|funnel/.test(f)) take(['idx1', 'idx2'].find(s => !out[s]) || 'x', n);
     delete out.x;
     return out;
   }
@@ -125,7 +130,7 @@ const MatchView = (() => {
   }
 
   // ---------------- state ----------------
-  const st = { open: false, built: '', el: null, timer: 0, playing: false, lastFrame: 0, rate: 1, hover: null, setup: false, roller: 0, lastRollT: 0 };
+  const st = { open: false, built: '', el: null, timer: 0, playing: false, lastFrame: 0, rate: 1, hover: null, setup: false, spin: {}, lastRollT: 0 };
   let cfg, overrides, camCfg, mechSrc;
   function loadCfg() {
     cfg = { ...DEFAULTS, ...api.store.get('7763.mv.cfg', {}) };
@@ -155,14 +160,17 @@ const MatchView = (() => {
     const camSel = camCfg.map(c => (c.src ? cams.find(x => x.id === c.src) || null : free.shift() || null));
     const mechs = S.sum.mechanisms;
     const pick = (k, re) => { const o = mechSrc[k]; if (o !== undefined) return mechs.find(m => m.name === o) || null; return mechs.find(m => re.test(m.name)) || null; };
-    const mech = { turret: pick('turret', /turret/i), hood: pick('hood', /hood/i), deploy: pick('deploy', /rack|intake|pivot|deploy|extend/i) };
+    const mech = { turret: pick('turret', /turret/i), hood: pick('hood', /hood/i), rack: pick('rack', /rack|hopper|extend|slide|deploy|intake|pivot/i) };
+    // the signal that arrives most steadily: when it stops for a while in the middle of a log, the robot was unreachable
+    const KB = api.Core.KEYS.battery;
+    const heart = api.Core.findEntry(S.log, ...KB) || [...S.log.entries.values()].filter(e => e.v && e.kind === 'num').sort((a, b) => b.count - a.count)[0] || null;
     const camView = camCfg.map((cc, i) => {
       const sel = camSel[i], logged = !cc.mount && sel ? loggedMount(sel.e.RobotToCamera) : null;
       const mount = cc.mount || (logged ? 'logged' : inferMount(sel && sel.name) || CAM_FALLBACK_MOUNT[i]);
       const [x, y, outA] = logged || (([nx, ny, a]) => [...bumperPt(nx, ny), a])(MOUNTS[mount] || MOUNTS.front);
       return { ...cc, label: cc.label || (sel ? sel.name : `Cam ${i + 1}`), mount, x, y, a: FACES[cc.face] == null ? outA : FACES[cc.face] };
     });
-    ctxCache = { sum: S.sum, log: S.log, key, motors, auto, roles, cams, camSel, camView, mech };
+    ctxCache = { sum: S.sum, log: S.log, key, motors, auto, roles, cams, camSel, camView, mech, heart };
     return ctxCache;
   }
 
@@ -236,13 +244,35 @@ const MatchView = (() => {
     return out;
   }
 
-  function liveComms() {
+  // How long nothing arrived before time t, when more arrives later (a radio drop or the robot losing power,
+  // as recorded on the driver station). 0 at the end of a log.
+  function dataGap(t) {
+    const e = ctx().heart;
+    if (!e || !e.t.length) return 0;
+    const i = api.Core.idxAt(e.t, t);
+    return i < 0 || i >= e.t.length - 1 ? 0 : t - e.t[i];
+  }
+  function liveComms(t) {
     const li = api.liveInfo();
-    if (!api.S.isLive && li.state === 'off') return { lvl: 'none', text: 'Log', li };
+    if (!api.S.isLive && li.state === 'off') {
+      const gap = dataGap(t);
+      return gap > 0.6 ? { lvl: 'major', text: 'Lost', li, gap } : { lvl: 'ok', text: 'OK', li, log: true };
+    }
     if (!api.S.isLive) return { lvl: li.state === 'connected' ? 'warn' : 'major', text: li.state === 'connected' ? 'Wait' : 'Lost', li, notLoaded: true };
     if (li.state === 'connected' && li.loaded) return { lvl: 'ok', text: li.rttMs != null ? `${Math.round(li.rttMs)} ms` : 'OK', li };
     if (li.state === 'connected' || li.state === 'connecting') return { lvl: 'warn', text: 'Wait', li };
     return { lvl: 'major', text: 'Lost', li };
+  }
+
+  // Which layout to show: 'pre' before the match (and between matches), 'auto' or 'tele' while one runs.
+  // A short disable (comms drop, the gap between auto and teleop) keeps the layout it had.
+  function layoutPhase(t, en, au) {
+    if (!api.S.sum.phases.hasDS) return 'tele';
+    if (en) return au ? 'auto' : 'tele';
+    const segs = api.S.sum.phases.segments.filter(s => (s.mode === 'auto' || s.mode === 'teleop') && s.t0 <= t);
+    const last = segs[segs.length - 1];
+    if (!last || t - last.t1 > 30) return 'pre';
+    return last.mode === 'auto' ? 'auto' : 'tele';
   }
 
   function nowT() {
@@ -321,7 +351,7 @@ const MatchView = (() => {
 
   function shooterSVG(c) {
     const fws = ['fw1', 'fw2', 'fw3', 'fw4'].filter((s, i) => i === 0 || c.roles[s]);
-    const left = [['turret', 70], ['hood', 104], ['kicker', 138]].map(([id, y]) => chip(id, 4, y, 98)).join('');
+    const left = [['turret', 70], ['hood', 104]].map(([id, y]) => chip(id, 4, y, 98)).join('');
     const right = fws.map((id, i) => chip(id, 318, 70 + 34 * i, 98)).join('');
     return `<svg viewBox="0 0 420 406" class="mv-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Shooter and turret">
       <text x="210" y="40" text-anchor="middle" class="front-lab">▲ ROBOT FRONT</text>
@@ -334,7 +364,6 @@ const MatchView = (() => {
           <rect x="-40" y="-78" width="80" height="120" rx="10" class="body"/>
           <rect x="-48" y="-72" width="96" height="24" rx="12" class="st f" data-part="fw"/>
           <path d="M-44-84Q0-108 44-84" class="st s" data-part="hood" stroke-width="8" fill="none" stroke-linecap="round"/>
-          <rect x="-30" y="-12" width="60" height="16" rx="6" class="st f" data-part="kicker"/>
           <path d="M0-100V-140M-8-128L0-142L8-128" class="exit"/>
         </g>
       </g>
@@ -345,23 +374,58 @@ const MatchView = (() => {
     </svg>`;
   }
 
+  // Side view of the hopper, front at the left. The rack (two motors) slides the hopper's front out; the intake's
+  // two rollers ride on its end, driven by one motor. The roller floor carries game pieces back to the kicker,
+  // which lifts them into the shooter.
   function intakeSVG(c) {
-    const spokes = [0, 60, 120].map(a => `<path d="M0-17V17" transform="rotate(${a})"/>`).join('');
-    return `<svg viewBox="0 0 420 406" class="mv-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Intake and indexer, side view">
+    const spokes = (id, r) => `<g class="spokes" data-spin="${id}">${[0, 60, 120].map(a => `<path d="M0-${r}V${r}" transform="rotate(${a})"/>`).join('')}</g>`;
+    const roller = (id, x, y, r) => `<g transform="translate(${x},${y})"><circle r="${r}" class="st f" data-part="${id}"/>${spokes(id, r - 4)}</g>`;
+    const floor = [0, 1, 2, 3, 4, 5].map(k => roller('floor', 196 + k * 30, 268, 11)).join('');
+    const teeth = Array.from({ length: 13 }, (_, k) => `M${92 + k * 12} 150v-6h6v6`).join('');
+    const ball = (x, y) => `<circle cx="${x}" cy="${y}" r="13" class="ball"/>`;
+    return `<svg viewBox="0 0 420 406" class="mv-svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Intake, hopper and kicker, side view">
       <text x="12" y="40" class="front-lab">◀ FRONT</text>
       <text x="408" y="40" text-anchor="end" class="ro-tiny">to shooter ▲</text>
       <path d="M0 300H420" class="ground"/>
-      <rect x="150" y="96" width="250" height="194" rx="10" class="frame"/>
-      <g data-deploy="1">
-        <rect x="116" y="252" width="124" height="12" rx="6" class="st f" data-part="deploy"/>
-        <g transform="translate(116,262)"><circle r="26" class="st f" data-part="intake"/><g class="spokes" data-spin="intake">${spokes}</g></g>
+      <g data-rack="1">
+        <rect x="84" y="150" width="170" height="134" rx="8" class="tray"/>
+        <path d="${teeth}" class="st s rack-teeth" data-part="rackL" stroke-width="2" fill="none"/>
+        <path d="M72 206Q58 228 66 254" class="st s belt" data-part="intake" stroke-width="5" fill="none"/>
+        ${roller('intake', 74, 200, 17)}${roller('intake', 64, 256, 17)}
       </g>
-      <path d="M196 252L300 168" class="st s belt" data-part="idx1" stroke-width="16" stroke-linecap="round" fill="none"/>
-      <path d="M300 168L352 92" class="st s belt" data-part="idx2" stroke-width="16" stroke-linecap="round" fill="none"/>
-      <circle cx="196" cy="252" r="9" class="idler"/><circle cx="300" cy="168" r="9" class="idler"/><circle cx="352" cy="92" r="9" class="idler"/>
-      <g data-spin-belt="1" class="belt-dots"></g>
-      ${c.mech.deploy ? '<text x="12" y="78" class="stat-k">DEPLOY</text><text x="12" y="104" class="stat-v sm" data-ro="deploy"></text><text x="12" y="122" class="ro-tiny" data-ro="deploySet"></text>' : ''}
-      ${chip('intake', 6, 320, 200)}${chip('deploy', 214, 320, 200)}${chip('idx1', 6, 356, 200)}${chip('idx2', 214, 356, 200)}
+      <rect x="176" y="116" width="226" height="174" rx="10" class="frame hopper"/>
+      ${ball(232, 238)}${ball(262, 242)}${ball(296, 236)}${ball(246, 212)}${ball(280, 214)}
+      <path d="M186 268H354" class="st s belt" data-part="floor" stroke-width="3"/>${floor}
+      <path d="M380 266V140" class="st s belt" data-part="kicker" stroke-width="12" stroke-linecap="round"/>
+      ${roller('kicker', 380, 266, 15)}${roller('kicker', 380, 140, 15)}
+      <path d="M380 118V82M371 94l9-14 9 14" class="exit"/>
+      <g transform="translate(206,150)"><circle r="14" class="st f gear" data-part="rackL"/><text y="4" text-anchor="middle" class="gear-l">L</text></g>
+      <g transform="translate(240,150)"><circle r="14" class="st f gear" data-part="rackR"/><text y="4" text-anchor="middle" class="gear-l">R</text></g>
+      <text x="12" y="78" class="stat-k">HOPPER OUT</text><text x="12" y="106" class="stat-v sm" data-ro="rack">—</text><text x="12" y="124" class="ro-tiny" data-ro="rackSet"></text>
+      ${chip('intake', 6, 316, 200)}${chip('floor', 214, 316, 200)}${chip('rackL', 6, 352, 132)}${chip('rackR', 144, 352, 132)}${chip('kicker', 282, 352, 132)}
+    </svg>`;
+  }
+
+  // Top-down field: where the robot is, where it's been (last few seconds), and where the turret points.
+  // Blue alliance wall on the left, like the WPILib field coordinates (x right, y up).
+  const FS = 50; // drawing units per meter
+  function fieldSVG() {
+    const W = api.S.field.w, H = api.S.field.h, X = x => (x * FS).toFixed(1), Y = y => ((H - y) * FS).toFixed(1);
+    const hub = (x, cls) => `<g transform="translate(${X(x)},${Y(4.03)})" class="hub ${cls}"><path d="M-30-17L0-35L30-17V17L0 35L-30 17Z"/></g>`;
+    const tags = (typeof Sample !== 'undefined' ? Sample.FIELD_TAGS : []).map(([id, x, y]) => `<rect x="${(x * FS - 4).toFixed(1)}" y="${((H - y) * FS - 4).toFixed(1)}" width="8" height="8" class="ftag"><title>Tag ${id}</title></rect>`).join('');
+    return `<svg viewBox="-14 -14 ${W * FS + 28} ${H * FS + 28}" class="mv-svg" data-field="1" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Field">
+      <rect x="0" y="0" width="${W * FS}" height="${H * FS}" rx="6" class="carpet"/>
+      <path d="M${X(W / 2)} 0V${H * FS}" class="midline"/>
+      <path d="M0 0V${H * FS}" class="wall blue"/><path d="M${X(W)} 0V${H * FS}" class="wall red"/>
+      ${hub(4.6, 'blue')}${hub(11.9, 'red')}${tags}
+      <text x="12" y="${H * FS - 12}" class="zone-l blue">BLUE</text><text x="${W * FS - 12}" y="${H * FS - 12}" text-anchor="end" class="zone-l red">RED</text>
+      <path data-trail="1" class="trail"/>
+      <g data-frobot="1" style="display:none">
+        <path data-aim="1" d="M0 0H140" class="aim"/>
+        <rect x="-23" y="-23" width="46" height="46" rx="6" class="fbot" data-fbumper="1"/>
+        <path d="M6-12L20 0L6 12" class="fdir"/>
+      </g>
+      <text x="${W * FS / 2}" y="${H * FS / 2 + 6}" text-anchor="middle" class="ro-small fnone" data-fnone="1" style="display:none">No robot pose in this ${api.S.isLive ? 'session' : 'log'} (log Drive/Pose)</text>
     </svg>`;
   }
 
@@ -386,7 +450,7 @@ const MatchView = (() => {
     root.innerHTML = `
       <header class="mv-top">
         <div class="mv-box mv-id"><b data-ro="id">7763</b><span data-ro="sub"></span></div>
-        <div class="mv-box mv-phase"><span class="ph-name" data-ro="phase">—</span><span class="mv-timer" data-ro="timer">—</span></div>
+        <div class="mv-box mv-phase"><span class="ph-name" data-ro="phase">—</span><span class="mv-timer" data-ro="timer">—</span><span class="mv-ready" data-ro="ready"></span></div>
         <div class="mv-box mv-icons">
           ${status('comms', 'robot', 'Robot')}${status('ds', 'ds', 'DS')}${status('fms', 'fms', 'FMS')}
           <span class="sep"></span>${status('js0', 'pad', 'Driver')}${status('js1', 'pad', 'Operator')}
@@ -399,7 +463,9 @@ const MatchView = (() => {
       <div class="mv-main">
         <section class="mv-box mv-card" data-mech="drive"><h2>Drive base<span class="sum" data-sum="drive"></span></h2>${driveSVG(c)}</section>
         <section class="mv-box mv-card" data-mech="shooter"><h2>Shooter / turret<span class="sum" data-sum="shooter"></span></h2>${shooterSVG(c)}</section>
-        <section class="mv-box mv-card" data-mech="intake"><h2>Intake / indexer<span class="sum" data-sum="intake"></span></h2>${intakeSVG(c)}</section>
+        <section class="mv-box mv-card" data-mech="intake"><h2>Intake / hopper<span class="sum" data-sum="intake"></span></h2>${intakeSVG(c)}</section>
+        <section class="mv-box mv-card" data-mech="field"><h2>Field<span class="sum" data-ro="fpos"></span></h2>${fieldSVG()}</section>
+        <div class="mv-alerts" data-ro="alerts"></div>
         <div class="mv-side">
           <section class="mv-box mv-card mv-power"><h2>Power</h2>
             <div class="mv-kv"><span>Total current</span><b data-ro="amps">—</b></div>
@@ -416,7 +482,6 @@ const MatchView = (() => {
         </div>
       </div>
       <footer class="mv-foot" data-ro="foot"></footer>
-      <div class="mv-banner" data-ro="banner" hidden></div>
       <div class="tip mv-tip" hidden></div>
       <div class="mv-setup" hidden></div>`;
     const q = s => root.querySelector(s);
@@ -431,7 +496,9 @@ const MatchView = (() => {
       sum: Object.fromEntries([...root.querySelectorAll('[data-sum]')].map(e => [e.dataset.sum, e])),
       wheels: Object.fromEntries([...root.querySelectorAll('[data-wheel]')].map(e => [e.dataset.wheel, e])),
       spark: Object.fromEntries([...root.querySelectorAll('[data-spark]')].map(e => [e.dataset.spark, e])),
-      heading: q('[data-heading]'), turret: q('[data-turret]'), tset: q('[data-tset]'), deploy: q('[data-deploy]'), tags: q('[data-tags]'), drive: q('[data-drive]'), spin: q('[data-spin="intake"]'), bumper: q('[data-bumper]'), batt: q('[data-batt]'),
+      heading: q('[data-heading]'), turret: q('[data-turret]'), tset: q('[data-tset]'), rack: q('[data-rack]'), tags: q('[data-tags]'), drive: q('[data-drive]'), bumper: q('[data-bumper]'), batt: q('[data-batt]'),
+      spins: [...root.querySelectorAll('[data-spin]')].map(g => ({ g, id: g.dataset.spin })),
+      frobot: q('[data-frobot]'), aim: q('[data-aim]'), trail: q('[data-trail]'), fbumper: q('[data-fbumper]'), fnone: q('[data-fnone]'),
     };
     root.querySelector('[data-act="setup"]').onclick = () => openSetup();
     root.querySelector('[data-act="exit"]').onclick = () => close();
@@ -442,7 +509,7 @@ const MatchView = (() => {
     renderFoot();
   }
 
-  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => [v.label, v.mount, v.x, v.y, v.a].join(':')).join() + '|' + api.S.log.fileName + '|' + !!c.mech.deploy;
+  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => [v.label, v.mount, v.x, v.y, v.a].join(':')).join() + '|' + api.S.log.fileName + '|' + !!c.mech.rack + '|' + api.S.field.w + 'x' + api.S.field.h;
 
   // ---------------- per-frame update ----------------
   const setLvl = (el, lvl) => { const cls = el.getAttribute('class').replace(/\blvl-\w+/g, '').trim() + ' lvl-' + lvl; if (el.getAttribute('class') !== cls) el.setAttribute('class', cls); };
@@ -458,17 +525,19 @@ const MatchView = (() => {
     const c = ctx();
     if (buildKey(c) !== st.built) build();
     const el = st.el, t = nowT(), L = S.limits;
-    const comms = liveComms();
-    const stale = (S.isLive || comms.notLoaded) && comms.lvl !== 'ok';
+    const comms = liveComms(t);
+    const stale = ((S.isLive || comms.notLoaded) && comms.lvl !== 'ok') || !!comms.gap;
     el.root.classList.toggle('stale', stale);
 
     // header
     const info = S.sum.info;
     setText(el.ro.id, S.isLive ? (info.match || 'LIVE') : (info.match || 'LOG'));
-    setText(el.ro.sub, [info.event, info.alliance, S.isLive ? (comms.li.sim ? 'simulated' : comms.li.host) : S.isSample ? 'sample match' : S.log.fileName].filter(Boolean).join(' · '));
+    setText(el.ro.sub, [info.event, info.alliance, S.isLive ? (comms.li.sim ? 'simulated' : comms.li.host) : S.isSample ? 'demo match' : S.log.fileName].filter(Boolean).join(' · '));
     const en = at(E('DS:enabled'), t) === 1, au = at(E('DS:autonomous'), t) === 1, te = at(E('DS:test'), t) === 1, es = at(E('DS:estop'), t) === 1;
     const phase = es ? ['E-STOP', 'estop'] : !en ? ['DISABLED', 'dis'] : au ? ['AUTO', 'auto'] : te ? ['TEST', 'test'] : ['TELEOP', 'tele'];
     setText(el.ro.phase, phase[0]); el.ro.phase.className = 'ph-name ' + phase[1];
+    const lp = layoutPhase(t, en, au);
+    for (const k of ['pre', 'auto', 'tele']) el.root.classList.toggle('mv-' + k, lp === k);
     let mt = at(E('DS/MatchTime', 'DriverStation/MatchTime'), t), est = false;
     if (!(mt >= 0)) {
       const seg = S.sum.phases.segments.find(s => t >= s.t0 && t < s.t1 + 1e-6);
@@ -479,7 +548,7 @@ const MatchView = (() => {
 
     // status icons
     const icSet = (k, lvl, val, title) => { const e = el.ic[k]; if (!e) return; setLvl(e, lvl); e.title = title || ''; setText(el.icv[k], val || ''); };
-    icSet('comms', comms.lvl, comms.text, S.isLive ? `NetworkTables ${comms.li.state}${comms.li.host ? ' · ' + comms.li.host : ''}` : 'Showing a log file, not live');
+    icSet('comms', comms.lvl, comms.text, S.isLive ? `NetworkTables ${comms.li.state}${comms.li.host ? ' · ' + comms.li.host : ''}` : comms.gap ? `No data from the robot for ${comms.gap.toFixed(1)} s here` : 'Replaying a log, not live');
     const dsE = E('DS:ds'), fmsE = E('DS:fms');
     const dsOn = at(dsE, t) === 1;
     icSet('ds', !dsE ? 'none' : dsOn ? 'ok' : 'major', !dsE ? '?' : dsOn ? 'OK' : 'Lost', 'Driver Station attached to the robot');
@@ -555,16 +624,37 @@ const MatchView = (() => {
     setText(el.ro.hood, isFinite(hPos) ? fmt(hPos) : isFinite(mstate.hood.vel) ? '—' : '—');
     setText(el.ro.hoodSet, isFinite(hSet) ? `goal ${fmt(hSet)}` : '');
 
-    // intake readouts: deploy fraction from the mechanism's own range, roller spin from its velocity
-    const dm = c.mech.deploy, dPos = mv(dm, 'Position'), dSet = mv(dm, 'Setpoint');
-    const frac = dm && isFinite(dPos) && dm.max > dm.min ? Math.max(0, Math.min(1, (dPos - dm.min) / (dm.max - dm.min))) : 0;
-    el.deploy.setAttribute('transform', `translate(${-frac * 70},0)`);
-    if (el.ro.deploy) { setText(el.ro.deploy, isFinite(dPos) ? `${Math.round(frac * 100)}% out` : '—'); setText(el.ro.deploySet, `${fmt(dPos)} ${cleanUnit(dm.unit)}`.trim()); }
+    // hopper: how far the rack has slid it out (from the mechanism's own range); rollers spin with their motor
+    const rm = c.mech.rack, rPos = mv(rm, 'Position'), rSet = mv(rm, 'Setpoint');
+    const frac = rm && isFinite(rPos) && rm.max > rm.min ? Math.max(0, Math.min(1, (rPos - rm.min) / (rm.max - rm.min))) : 0;
+    el.rack.setAttribute('transform', `translate(${-frac * 62},0)`);
+    setText(el.ro.rack, rm && isFinite(rPos) ? `${Math.round(frac * 100)}%` : '—');
+    setText(el.ro.rackSet, rm && isFinite(rPos) ? `${fmt(rPos)} ${cleanUnit(rm.unit)}${isFinite(rSet) ? ` · goal ${fmt(rSet)}` : ''}`.trim() : 'no Mechanisms/Rack');
     const now = performance.now(), dtR = Math.min(0.2, (now - st.lastRollT) / 1000); st.lastRollT = now;
-    const iv = mstate.intake.vel, duty = mstate.intake.duty;
-    const spin = isFinite(iv) ? iv : isFinite(duty) ? duty * 5000 : 0;
-    st.roller = (st.roller + Math.max(-1, Math.min(1, spin / 6000)) * 720 * dtR) % 360;
-    el.spin.setAttribute('transform', `rotate(${st.roller})`);
+    for (const id of ['intake', 'floor', 'kicker']) {
+      const ms = mstate[id], v = isFinite(ms.vel) ? ms.vel : isFinite(ms.duty) ? ms.duty * 5000 : 0;
+      st.spin[id] = ((st.spin[id] || 0) + Math.max(-1, Math.min(1, v / 6000)) * 720 * dtR) % 360;
+    }
+    for (const sp of el.spins) sp.g.setAttribute('transform', `rotate(${st.spin[sp.id] || 0})`);
+
+    // field: robot, its last few seconds of path, and where the turret points
+    const fp = S.sum.poses[0];
+    let fi = -1;
+    if (fp) fi = Math.min(api.Core.idxAt(fp.t, t), Math.min(fp.r.length, fp.x.length, fp.y.length) - 1);
+    el.fnone.style.display = fp ? 'none' : '';
+    el.frobot.style.display = fi >= 0 ? '' : 'none';
+    if (fi >= 0) {
+      const FH = S.field.h, px = fp.x[fi], py = fp.y[fi], pr = fp.r[fi] * 180 / Math.PI;
+      el.frobot.setAttribute('transform', `translate(${(px * FS).toFixed(1)},${((FH - py) * FS).toFixed(1)}) rotate(${(-pr).toFixed(1)})`);
+      el.fbumper.setAttribute('class', 'fbot ' + (info.alliance ? info.alliance.toLowerCase() : ''));
+      el.aim.style.display = isFinite(tDeg) ? '' : 'none';
+      if (isFinite(tDeg)) el.aim.setAttribute('transform', `rotate(${(-tDeg).toFixed(1)})`);
+      let d = '', k = fi;
+      while (k > 0 && fp.t[fi] - fp.t[k] < 6) k--;
+      for (let j = k, n = 0; j <= fi; j += Math.max(1, Math.floor((fi - k) / 150)), n++) d += `${n ? 'L' : 'M'}${(fp.x[j] * FS).toFixed(1)} ${((FH - fp.y[j]) * FS).toFixed(1)}`;
+      el.trail.setAttribute('d', d);
+      setText(el.ro.fpos, `x ${px.toFixed(1)} · y ${py.toFixed(1)} m · ${Math.round(((pr % 360) + 360) % 360)}°`);
+    } else { el.trail.setAttribute('d', ''); setText(el.ro.fpos, ''); }
 
     // battery
     const bat = E(...api.Core.KEYS.battery), bV = at(bat, t);
@@ -610,7 +700,8 @@ const MatchView = (() => {
 
     // active faults
     const F = [];
-    if (comms.lvl === 'major') F.push(['major', 'No robot comms', `Can't reach ${comms.li.host || 'the robot'}. ${comms.notLoaded ? `Showing the ${S.isSample ? 'sample match' : 'open log'}, not the robot.` : 'Data shown is the last received.'}`]);
+    if (comms.gap) F.push(['major', 'No robot comms', `Nothing from the robot for ${comms.gap.toFixed(1)} s (radio drop or the robot lost power)`]);
+    else if (comms.lvl === 'major') F.push(['major', 'No robot comms', `Can't reach ${comms.li.host || 'the robot'}. ${comms.notLoaded ? `Showing the ${S.isSample ? 'demo match' : 'open log'}, not the robot.` : 'Data shown is the last received.'}`]);
     if (dsE && !dsOn) F.push(['major', 'Driver Station not connected to robot', '']);
     if (es) F.push(['major', 'E-stopped', '']);
     if (bo) F.push(['major', 'Brownout', 'Motor outputs are cut until voltage recovers.']);
@@ -635,14 +726,36 @@ const MatchView = (() => {
     const earlier = S.sum.flags.filter(f => f.t <= t).length;
     setText(el.ro.fnote, earlier ? `${earlier} issue${earlier === 1 ? '' : 's'} logged so far this ${S.isLive ? 'session' : 'match'} (see Report)` : '');
 
-    // banner when the robot is unreachable
-    const ban = el.ro.banner;
+    // big alerts: anything that's not connected at all (robot comms, controllers, cameras, motors), so it can't be
+    // missed from across the driver station. Several fit; a lot of motors at once collapse into one.
+    const A = [];
     if (stale) {
       const li = comms.li;
-      ban.hidden = false;
-      ban.innerHTML = `${li.state === 'connected' ? 'Waiting for robot data…' : li.state === 'off' ? 'Not connected to the robot' : 'No robot comms'}<small>${esc(li.host || '')}${comms.notLoaded ? ` · showing ${S.isSample ? 'the sample match' : 'the open log'}` : ' · showing the last data received'}</small>`;
-      ban.className = 'mv-banner ' + (comms.lvl === 'major' ? 'lvl-major' : 'lvl-warn');
-    } else ban.hidden = true;
+      A.push([comms.lvl === 'major' ? 'major' : 'warn', comms.gap ? 'No robot comms' : li.state === 'connected' ? 'Waiting for robot data' : li.state === 'off' ? 'Not connected to the robot' : 'No robot comms',
+        comms.gap ? `Nothing received for ${comms.gap.toFixed(1)} s` : `${li.host || ''}${comms.notLoaded ? ` · showing ${S.isSample ? 'the demo match' : 'the open log'}` : ' · showing the last data received'}`]);
+    } else if (dsE && !dsOn) A.push(['major', 'Driver Station lost the robot', 'Robot disabled']);
+    if (es) A.push(['major', 'E-stopped', '']);
+    if (!stale) {
+      if (bo) A.push(['major', 'Brownout', `Battery ${isFinite(bV) ? bV.toFixed(1) + ' V' : 'low'}`]);
+      for (const j of jsState) if (j.lvl === 'major') A.push(['major', `${j.p ? 'Operator' : 'Driver'} controller unplugged`, `USB port ${j.p}`]);
+      camS.forEach((cs, i) => { if (cs.lvl === 'major') A.push(['major', `Camera ${i + 1} offline`, cs.label]); });
+      const off = allMotors.filter(m => m.m && !m.online);
+      if (off.length > 3) A.push(['major', `${off.length} motors off CAN`, off.slice(0, 6).map(m => m.name).join(', ') + (off.length > 6 ? '…' : '')]);
+      else for (const m of off) { const sl = slotOf.get(m.name); A.push(['major', `${sl ? slotDef(sl).label : m.name} off CAN`, `${m.canId != null ? 'CAN ' + m.canId + ' · ' : ''}${m.name}`]); }
+    }
+    const aKey = A.map(a => a.join('|')).join('#');
+    if (el.ro.alerts.dataset.k !== aKey) {
+      el.ro.alerts.dataset.k = aKey;
+      const MAX = 6, shown = A.slice(0, A.length > MAX ? MAX - 1 : MAX);
+      el.ro.alerts.className = 'mv-alerts n' + Math.min(4, A.length);
+      el.ro.alerts.innerHTML = shown.map(([lvl, a, b]) => `<div class="mv-alert lvl-${lvl}"><b>${esc(a)}</b>${b ? `<span>${esc(b)}</span>` : ''}</div>`).join('')
+        + (A.length > shown.length ? `<div class="mv-alert lvl-major more"><b>+${A.length - shown.length} more</b><span>see Active faults</span></div>` : '');
+    }
+
+    // pre-match: one word on whether everything that has to be connected, is
+    const readyBad = ['comms', 'ds', 'js0', 'js1', 'cam0', 'cam1', 'can'].map(k => el.ic[k]).filter(e => e && /lvl-(major|fault)/.test(e.getAttribute('class')));
+    setText(el.ro.ready, lp !== 'pre' ? '' : readyBad.length ? `${readyBad.length} not ready` : 'Ready');
+    el.ro.ready.className = 'mv-ready ' + (readyBad.length ? 'bad' : 'ok');
 
     renderFoot();
     if (st.hover) showTip(st.hover.target, st.hover.x, st.hover.y, mstate, camS);
@@ -669,12 +782,13 @@ const MatchView = (() => {
           <select class="sel" data-f="rate" aria-label="Playback speed">${[0.5, 1, 2, 4].map(r => `<option value="${r}"${r === st.rate ? ' selected' : ''}>${r}×</option>`).join('')}</select>
           <input type="range" data-f="scrub" min="${a}" max="${b}" step="0.02" value="${tt}" aria-label="Match time">
           <span class="mono" data-f="time"></span>
-          <span class="hint">${S.isSample ? 'Sample match' : 'Replaying ' + esc(S.log.fileName)}</span>
+          <select class="sel mv-match" data-f="match" aria-label="Match"></select>
           <span class="foot-live">${liveControls()}</span>`;
         const f = k => foot.querySelector(`[data-f="${k}"]`);
         f('play').onclick = () => { st.playing = !st.playing; f('play').textContent = st.playing ? 'Pause' : 'Play'; st.lastFrame = performance.now(); if (st.playing && nowT() >= S.log.tMax - 0.05) api.setCursor(S.log.tMin); };
         f('rate').onchange = e => { st.rate = +e.target.value; };
         f('scrub').oninput = e => { api.setCursor(+e.target.value); update(); };
+        api.matchMenu(f('match'));
         wireLive(foot);
       }
       const sc = foot.querySelector('[data-f="scrub"]'); if (sc && document.activeElement !== sc) sc.value = tt;
@@ -689,7 +803,9 @@ const MatchView = (() => {
     foot.innerHTML = `<span class="live-dot ${li.state === 'connected' && li.loaded ? 'on' : on ? 'wait' : 'err'}"></span>
       <span>${li.sim && li.state === 'connected' ? 'Simulated match' : li.state === 'connected' ? (li.loaded ? `Live from ${esc(li.host)}` : `Connected to ${esc(li.host)}, waiting for data`) : li.state === 'retrying' ? `Can't reach ${esc(li.host)}:5810, retrying` : li.state === 'connecting' ? `Connecting to ${esc(li.host)}…` : 'Disconnected, showing the last data received'}</span>
       ${li.sim ? '<span class="sim-next mono" data-f="simnext"></span>' : ''}
+      <select class="sel mv-match" data-f="match" aria-label="Match"></select>
       <span class="foot-live">${liveControls()}</span>`;
+    api.matchMenu(foot.querySelector('[data-f="match"]'));
     wireLive(foot);
     if (li.sim) renderSimNext();
   }
@@ -774,7 +890,7 @@ const MatchView = (() => {
       <div class="mv-setup-grid">
         <section><h3>Drive base</h3>${SLOTS.drive.map(slotRow).join('')}</section>
         <section><h3>Shooter / turret</h3>${SLOTS.shooter.map(slotRow).join('')}${mechRow('turret', 'Turret angle (Mechanisms/…)')}${mechRow('hood', 'Hood position')}</section>
-        <section><h3>Intake / indexer</h3>${SLOTS.intake.map(slotRow).join('')}${mechRow('deploy', 'Intake extension')}</section>
+        <section><h3>Intake / hopper</h3>${SLOTS.intake.map(slotRow).join('')}${mechRow('rack', 'Hopper extension (rack)')}</section>
         <section><h3>Cameras</h3>${camCfg.map(camRow).join('')}
           <div class="mv-two">${num('camLatencyMs', 'Fault above (ms)')}${num('camMinFps', 'Fault below (FPS)')}</div>
           <p class="hint">${c.cams.length ? `Found: ${c.cams.map(x => esc(x.name)).join(', ')}.` : 'No camera data yet. Log Vision/&lt;name&gt;/Connected and Vision/&lt;name&gt;/TagCount (robot-code/MatchTelemetry.java), or PhotonVision/Limelight tables are picked up on their own.'} Cameras that log Vision/&lt;name&gt;/RobotToCamera are placed from it, and TagYawDeg / TagDistanceM / TagIds draw the tags they see (logging-needed/match-view-logging.md).</p></section>
@@ -833,11 +949,14 @@ const MatchView = (() => {
     document.body.classList.add('mv-on');
     document.getElementById('matchView').hidden = false;
     const S = api.S;
-    if (!S.isLive && S.log && S.cursor == null && S.mechT == null) {
-      const first = S.sum.flags.find(f => f.sev === 'crit');
+    const takeover = opts.connect && api.canLive && api.liveInfo().state === 'off' && (S.isSample || S.autoOpened || !S.log);
+    if (!S.isLive && S.log && S.cursor == null && S.mechT == null && !takeover) {
+      // a demo plays from the start; a real log opens at its first serious problem
+      const first = !S.isSample && S.sum.flags.find(f => f.sev === 'crit');
       api.setCursor(first ? first.t + 0.3 : S.log.tMin);
+      if (S.isSample) { st.playing = true; st.lastFrame = performance.now(); }
     }
-    if (opts.connect && api.canLive && api.liveInfo().state === 'off' && (S.isSample || !S.log)) api.startLive(api.liveHost());
+    if (takeover) api.startLive(api.liveHost());
     if (window.FRC_DESKTOP && cfg.autoFit && opts.fit) fitWindow(false);
     try { history.replaceState(null, '', '#matchview'); } catch { /* ignore */ }
     loop();

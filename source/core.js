@@ -418,7 +418,7 @@ const Core = (() => {
     ProcTemp: ['crit', 'Processor too hot', 'The controller electronics overheated.'],
     DeviceTemp: ['crit', 'Device too hot', 'The controller cut output to protect the motor from heat.'],
     Undervoltage: ['warn', 'Undervoltage', 'Voltage at the controller fell close to brownout. Check battery sag and this controller\'s power wiring.'],
-    BootDuringEnable: ['crit', 'Rebooted while on', 'The controller lost power or reset during the match. Check its power connector, breaker and wire crimps.'],
+    BootDuringEnable: ['crit', 'Rebooted while enabled', 'The controller lost power or reset during the match. Check its power connector, breaker and wire crimps.'],
     BridgeBrownout: ['crit', 'Bridge brownout', 'The output stage shut off from low voltage, so the motor went limp.'],
     OverSupplyV: ['crit', 'Supply over voltage', 'Supply voltage went above the controller\'s rating.'],
     UnstableSupplyV: ['warn', 'Unstable supply voltage', 'Usually a loose or high-resistance power connection.'],

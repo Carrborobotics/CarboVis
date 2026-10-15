@@ -23,9 +23,15 @@ shortcuts from the old `install.ps1` installer. Saved robot setup from the old v
   `127.0.0.1`. It only reads NetworkTables (port 5810); it never sends anything to the robot.
 - **Match view** (for the driver station during a match). Double-click **CarboVis Match View**, or press **M** in
   the app; Esc goes back. Top bar: match phase and time, robot comms, DS, FMS, controllers, cameras, CAN, battery.
-  Middle: drive base, shooter/turret, intake/indexer. Right: power, CAN bus and every active fault. Green = OK,
-  yellow = needs attention, red = fault, blinking red = not connected. **Setup** in the match view changes the
+  Middle: field (robot, path, turret aim), drive base, shooter/turret, intake/hopper (intake rollers, roller floor,
+  the rack's two motors, kicker). Right: power, CAN bus and every active fault. Green = OK, yellow = needs attention,
+  red = fault, blinking red = not connected. Anything not connected at all (robot comms, a controller, a camera, a
+  motor) also flashes up as a big alert across the top. The layout follows the match: before it, the comms,
+  controllers, cameras and battery are big tiles with a READY / NOT READY call; in auto the field leads; in teleop
+  the shooter and hopper do. On a short screen the field becomes a mini-map. **Setup** in the match view changes the
   motor/camera mapping and the space left for the Driver Station (230 px by default).
+- **Picking a match.** CarboVis opens on the newest match in the library. The match menu at the top (and in the
+  match view's footer) lists recent matches and the two demo matches; **All logs…** opens the library.
 - **Robot logs.** DogLog writes `.wpilog` files to the USB stick in the roboRIO (`logs` folder), or
   `/home/lvuser/logs` without a stick. Open one, drop it on the window, or Logs → **Import**; it's kept in the
   library and uploaded like a recording.
@@ -125,11 +131,11 @@ needed when upgrading those libraries): `cd source/vendor && npm install && npm 
 | `live.js` | Turns live NetworkTables values into the same data model as a log file |
 | `recorder.js` | Driver station recording: encodes live NetworkTables values into a `.wpilog` as they arrive |
 | `library.js` | Logs: this computer's folder, the team's GitHub library, nearby computers; recording and upload rules |
-| `fakematch.js` | Simulated match: a made-up robot running in the page (Live / Match view → "Simulated match"), with scripted faults on each mechanism |
+| `fakematch.js` | The made-up robot: live "Simulated match", and the two demo matches (recorded with `recorder.js`) |
 | `matchview.js` | Match view: full-window live status above the Driver Station (mechanisms, cameras, controllers, faults) |
 | `robot3d.js` | 3D robot: CAD import (.glb/.gltf/.stl, AdvantageScope folders), joints, motor tinting |
 | `mechviz.js` | Shooter picture and hand-traced motor outlines |
-| `sample.js` | Generates the sample match shown on first open |
+| `sample.js` | Rough field layout (AprilTags) and camera mounts for the made-up robot |
 | `app.js` | UI: every tab |
 | `build.py` / `build_web.py` | Builds: app + web version / claude.ai version |
 | `icons/` | Web-app icons (the desktop icon is `desktop/build/icon.ico`) |
@@ -154,23 +160,34 @@ DogLog writes everything under `/Robot/`; the app strips that prefix, so these a
 
 ## Testing live mode without a robot
 
-Quickest: in the app, Match view (or Live) → **Simulated match**. It runs a fake robot inside the page through a
-full match (4 s pre-match, 20 s auto, 140 s teleop, then the next match), with faults at set times:
+Quickest: pick a demo from the match menu (top of the app, or the match view's footer):
+- **Demo: clean match** (Q58): a tidy match where everything stays green.
+- **Demo: everything breaks** (E4): things go wrong a few at a time, then the robot loses power. The match view
+  plays it from the start.
+
+Both are recorded by the same code the driver station uses (`source/fakematch.js` → `source/recorder.js`), so they
+open like any recording. To watch the same failures arrive live: Match view (or Live) → **Simulated match**, which
+runs that robot inside the page through a full match (8 s pre-match, 20 s auto, 140 s teleop, then the next one):
 
 | Match time | What breaks |
 |---|---|
-| 12–15 s | Back camera latency spike (red) |
-| 38–41 s | BL drive off CAN (blinking) |
-| 52–56 s | Flywheel follower at its stator limit (yellow) |
-| 66–73 s | Intake roller off CAN, then reboots |
-| 84–89 s | Front camera disconnected (blinking) |
-| 97–100 s | Hood CANcoder invalid (red) |
-| 102–106 s | Kicker off CAN, then reboots |
-| 110–114 s | Indexer jam at its current limit (yellow) |
-| 122–125 s | Operator controller unplugged |
-| 131 s | Brownout |
-| 136 s on | Turret overheats (yellow, then red) |
-| 150–151.5 s | Driver Station link drops |
+| −7 to −2.5 s | Operator controller unplugged before the match (pre-match shows NOT READY) |
+| 5–9 s | Back camera latency spike + hood CANcoder invalid |
+| 12–17 s | Front camera offline + FL steer off CAN |
+| 30–38 s | Intake rollers off CAN (then reboot) + roller floor jammed |
+| 44–48 s | BL drive off CAN + flywheel follower at its current limit |
+| 51–57 s | Kicker off CAN, then reboots |
+| 60–62.5 s | Radio drops: no robot comms |
+| 68–73 s | Driver controller unplugged + rack right off CAN |
+| 78 s on | Turret overheats (yellow, then red) |
+| 86–90 s | Both cameras offline |
+| 96 s | Brownout while pushing |
+| 100–101.8 s | Radio drops again |
+| 106–110 s | Intake rollers stall + rack left at its current limit |
+| 116–119.5 s | Battery connector working loose: voltage collapses, motors drop out |
+| 119.5–139 s | Robot loses power and reboots (no comms) |
+| 139–143 s | Robot back: every controller reports a reboot |
+| 150–154 s | Operator controller unplugged + back camera offline |
 
 The match view footer shows what breaks next. From the browser console, `FakeMatch.last.mt = 60` jumps the clock.
 

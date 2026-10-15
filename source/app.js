@@ -1447,11 +1447,11 @@
       : [i.event, i.date && `${i.date}${i.time ? ' ' + i.time : ''}`, `${fmt(s.duration, 0)} s log`].filter(Boolean).join(' · ');
     $('#matchHead').replaceChildren(...[h('span', { class: 'id' }, id), h('span', { class: 'sub' }, sub),
       i.alliance ? h('span', { class: 'chip ' + i.alliance.toLowerCase() }, i.alliance) : null,
-      S.isLive ? h('span', { class: 'chip live' }, 'Live') : S.isSample ? h('span', { class: 'chip sample' }, 'Sample data') : h('span', { class: 'chip mono', title: S.log.fileName }, S.log.fileName.length > 34 ? S.log.fileName.slice(0, 32) + '…' : S.log.fileName)].filter(Boolean));
+      S.isLive ? h('span', { class: 'chip live' }, 'Live') : S.isSample ? h('span', { class: 'chip sample' }, 'Demo') : h('span', { class: 'chip mono', title: S.log.fileName }, S.log.fileName.length > 34 ? S.log.fileName.slice(0, 32) + '…' : S.log.fileName)].filter(Boolean));
     const b = $('#banner');
     if (S.isSample) b.replaceChildren(h('div', { class: 'banner', style: 'margin-bottom:18px' }, h('p', null,
-      'This is a made-up match so you can see how the viewer works. To load your own, open the ', h('code', null, '.wpilog'), ' from the ', h('code', null, 'logs'),
-      ' folder on the robot\'s USB stick (or pull it off the robot with WPILib\'s DataLogTool), or drop it anywhere on this page. Files are read in your browser and never uploaded.')));
+      'This is a demo match with made-up data, to show what CarboVis does. Pick a real match from the match menu at the top, open a ', h('code', null, '.wpilog'),
+      ' from the robot\'s USB stick, or drop one anywhere on this page.')));
     else if (S.log.truncated) b.replaceChildren(h('div', { class: 'banner', style: 'margin-bottom:18px' }, h('p', null, 'The file ends partway through a record, probably because the robot lost power while logging. Everything before that point is shown.')));
     else b.replaceChildren();
   }
@@ -1472,14 +1472,17 @@
     S.view = { t0: log.tMin, t1: log.tMax }; const [a, b] = matchRange(); S.view = { t0: a, t1: b };
     if (S.isLive && live) { S.view = { t0: Math.max(log.tMin, log.tMax - live.span), t1: log.tMax }; S.mechT = log.tMax; }
     S.sig = liveSig();
-    renderHeader(); updateSaveBtn(); showTab(S.tab);
+    S.autoOpened = false;
+    renderHeader(); updateSaveBtn(); showTab(S.tab); renderMatchSel();
   }
-  function openBuffer(buf, name) {
+  // opts.auto: opened by the app on its own (the latest match at startup), so live view may take over
+  function openBuffer(buf, name, opts) {
     try {
       const log = Core.parseWpilog(buf, name);
       if (!log.entries.size) throw new Error('The file opened but contains no entries.');
-      if (matchView.isOpen()) matchView.close();
+      if (matchView.isOpen() && !(opts && opts.auto)) matchView.close();
       loadLog(log, false);
+      S.autoOpened = !!(opts && opts.auto);
       toast(`Opened ${name}: ${log.entries.size} signals, ${log.records.toLocaleString()} records`);
       return true;
     } catch (err) { showError(`Couldn't read ${name}. ${err.message}`); console.error(err); return false; }
@@ -1523,6 +1526,7 @@
     S, h, fmt, Core, store, toast, setCursor,
     canLive: CAN_LIVE, presets: LIVE_PRESETS, liveHost: () => liveState.host,
     liveInfo: () => (live && live.client ? { state: live.client.state, loaded: live.loaded && S.log === live.log, host: live.client.o.host, rttMs: live.client.rttMs, sim: isSim(live.client.o.host) } : { state: 'off', loaded: false, host: liveState.host }),
+    matchMenu: fillMatchSel,
     simHost: FakeMatch.HOST, simUpcoming: () => (live && live.client && isSim(live.client.o.host) ? FakeMatch.upcoming(live.client) : []),
     startLive: host => { if (!host) return; liveState.host = host; store.set('7763.liveHost', host); startLive(host); },
     stopLive,
@@ -1530,12 +1534,52 @@
   });
   $('#mvBtn').onclick = () => matchView.open({ connect: true, fit: true });
 
+  // ---------- MATCH MENU ----------
+  // The header's match picker: recent matches from the library, the demo matches, and the full library.
+  const demoCache = new Map();
+  async function loadDemo(id) {
+    const busy = h('div', { class: 'busy' }, 'Building the demo match…'); document.body.append(busy);
+    await new Promise(r => setTimeout(r, 30));
+    try {
+      if (!demoCache.has(id)) demoCache.set(id, FakeMatch.record(id));
+      const d = demoCache.get(id);
+      loadLog(Core.parseWpilog(d.buf, d.fileName), true);
+      if (matchView.isOpen()) matchView.update();
+    } catch (err) { showError('The demo match failed to load: ' + err.message); console.error(err); }
+    busy.remove();
+  }
+  function fillMatchSel(sel) {
+    const cur = S.isLive ? 'live' : S.log ? S.log.fileName : '';
+    const recent = Library.recent(15), demo = FakeMatch.DEMOS.find(d => d.fileName === cur), inList = recent.find(r => r.name === cur);
+    const curKey = S.isLive ? 'live' : demo ? 'demo:' + demo.id : inList ? inList.key : cur;
+    const flag = s => (!s ? '' : s.critCount ? ` · ${s.critCount} critical` : s.warnCount ? ` · ${s.warnCount} warning` : ' · clean');
+    const opt = (value, label, title) => h('option', { value, selected: value === curKey, title }, label);
+    const kids = [];
+    if (S.isLive) kids.push(opt('live', `Live · ${isSim(S.log.host) ? 'simulated match' : S.log.host}`));
+    else if (S.log && !demo && !inList) kids.push(opt(cur, S.sum.info.match ? `${S.sum.info.match} · ${S.sum.info.event || S.log.fileName}` : S.log.fileName, S.log.fileName));
+    if (recent.length) kids.push(h('optgroup', { label: 'Recent matches' }, ...recent.map(r => opt(r.key, `${r.title}${r.date ? ' · ' + r.date : ''}${flag(r.summary)}`, r.name))));
+    kids.push(h('optgroup', { label: 'Demo matches' }, ...FakeMatch.DEMOS.map(d => opt('demo:' + d.id, d.label))));
+    if (Library.enabled) kids.push(h('option', { value: '__lib' }, 'All logs…'));
+    if (!S.log) kids.unshift(h('option', { value: '', selected: true, disabled: true }, 'Opening…'));
+    sel.replaceChildren(...kids);
+    sel.onchange = () => {
+      const v = sel.value;
+      if (v !== '__lib' && v !== curKey && live && live.client) stopLive(); // picking a match means watching it, not the robot
+      if (v === '__lib') Library.open();
+      else if (v.startsWith('demo:')) loadDemo(v.slice(5));
+      else if (v !== curKey) Library.openKey(v);
+      setTimeout(() => fillMatchSel(sel), 0); // until the new match loads, show the one on screen
+    };
+  }
+  function renderMatchSel() { for (const sel of document.querySelectorAll('#matchSel, #matchView [data-f="match"]')) if (document.activeElement !== sel) fillMatchSel(sel); }
+
   // ---------- LIBRARY ----------
   // Logs on this computer, the team's GitHub library and nearby computers (library.js).
   $('#libBtn').onclick = () => Library.open();
   const libReady = Library.init({
     h, fmt, toast, openBuffer, simHost: FakeMatch.HOST, limits: () => S.limits,
     onHistory: docs => { if (S.db) return; S.history = docs; renderTabs(); if (S.built.history) renderHistory(); },
+    onLists: renderMatchSel,
     onUpdate: u => { const b = $('#updBtn'); b.hidden = u.state !== 'ready'; b.title = `CarboVis ${u.version} is downloaded. Restart to install it now, or it installs the next time CarboVis closes.`; },
   });
   if (window.carbovis) {
@@ -1544,17 +1588,20 @@
     window.carbovis.on('open-matchview', () => matchView.open({ connect: true, fit: true }));
   }
 
-  window.__frc = { S, Core, matchView }; // for debugging from the browser console
+  window.__frc = { S, Core, matchView, loadDemo }; // for debugging from the browser console
   // ---------- boot ----------
   readColors();
   const hash = (location.hash || '').slice(1);
   if (TABS.some(([t]) => t === hash)) S.tab = hash;
   renderTabs();
-  setTimeout(() => {
-    try { loadLog(Core.parseWpilog(Sample.generate(), Sample.fileName), true); }
-    catch (err) { showError('The sample match failed to load: ' + err.message); console.error(err); }
+  // Open on the newest match there is (the team library, this computer, the driver station's share), or the
+  // clean demo when there's none. The driver station's match view doesn't wait on the internet: it shows what's
+  // on the laptop and connects to the robot.
+  renderMatchSel();
+  setTimeout(async () => {
+    await libReady;
+    const opened = await Library.openLatest(hash === 'matchview' ? 0 : 4000).catch(() => false);
+    if (!opened) await loadDemo('clean');
     if (hash === 'matchview') matchView.open({ connect: true, fit: true });
-    // phones and other computers come here for the team's logs: show them first
-    else if (!hash && !window.carbovis && Library.enabled) libReady.then(() => Library.open());
   }, 0);
 })();

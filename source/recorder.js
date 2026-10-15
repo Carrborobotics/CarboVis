@@ -77,6 +77,14 @@ const Recorder = (() => {
       if ((word & 0x10) && wasEn && !(was & 2) && !en) this.matchEndedAt = Date.now();
       this.control = word;
     }
+    // Lost the robot (radio drop, robot off): record the DS as detached and disabled as of the last value heard,
+    // so the gap shows up as a comms drop. The next control word from the robot sets them back.
+    commsLost(us) {
+      const t = Math.max(us != null ? us : this.tMax, isFinite(this.tMax) ? this.tMax : 0);
+      for (const n of ['DS:ds', 'DS:enabled']) { const d = this.ds.get(n); if (d && d.v !== 0) { this.w.record(d.id, t, Uint8Array.of(0)); d.v = 0; } }
+      if (this.control & 1 && this.lastEnabledT != null) { this.enabledS += (t - this.lastEnabledT) / 1e6; this.lastEnabledT = null; }
+      this.control &= ~0x21;
+    }
     get enabled() { return !!(this.control & 1); }
     get fmsAttached() { return !!(this.control & 0x10); }
     get durationS() { return isFinite(this.tMax) ? (this.tMax - this.tMin) / 1e6 : 0; }

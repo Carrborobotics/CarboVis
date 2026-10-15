@@ -91,10 +91,15 @@ branch of 7763-Code-2026). Those still need to be merged into the robot code.
 | `Motors/<name>/CANId, CANBus, Controller, SupplyLimitA, StatorLimitA` | `long` / `string` / `double` | Motor identity and current limits (once at startup is enough). |
 | `Mechanisms/Turret/Position`, `Setpoint` | `double` (deg) | Turret angle and goal. |
 | `Mechanisms/Hood/Position`, `Setpoint` | `double` | Hood position and goal. |
-| `Mechanisms/Rack/Position`, `Setpoint` | `double` (rot) | Intake extension and goal. |
+| `Mechanisms/Rack/Position`, `Setpoint` | `double` (rot) | How far the rack has slid the hopper out, and its goal. |
 
-Motor names should include where they are (e.g. `DriveFL`, `SteerBR`, `Turret`, `Flywheel1`, `Kicker`,
-`Intake`, `Indexer1`) so the match view can assign them by itself.
+Motor names should say what they are so the match view can assign them by itself:
+- Drive base: `DriveFL`, `SteerBR`, ... (or `FL drive`, `Module0Steer`)
+- Shooter: `Turret`, `Hood`, `Flywheel`, `Flywheel follower` (up to four flywheels)
+- Intake / hopper: `Intake rollers` (the one motor for both rollers), `Roller floor`, `Rack left` and `Rack right`
+  (the two rack motors; "left"/"right" in the name puts them on that side), `Kicker`
+
+Anything it gets wrong can be fixed by hand in the match view's Setup.
 
 ---
 
