@@ -13,7 +13,7 @@ const MatchView = (() => {
   const LVL_RANK = { major: 4, fault: 3, warn: 2, ok: 1, missing: 0, none: 0 };
   const worst = lvls => lvls.reduce((a, b) => (LVL_RANK[b] > LVL_RANK[a] ? b : a), 'none');
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const DEFAULTS = { dsHeight: 230, autoLen: 20, teleLen: 140, camLatencyMs: 150, camMinFps: 10, autoFit: true };
+  const DEFAULTS = { dsHeight: 230, autoLen: 20, teleLen: 140, camLatencyMs: 150, camMinFps: 10, autoFit: true, operator: true, simCams: true };
 
   // ---------------- motor roles ----------------
   const MODS = ['FL', 'FR', 'BL', 'BR'];
@@ -453,7 +453,7 @@ const MatchView = (() => {
         <div class="mv-box mv-phase"><span class="ph-name" data-ro="phase">—</span><span class="mv-timer" data-ro="timer">—</span><span class="mv-ready" data-ro="ready"></span></div>
         <div class="mv-box mv-icons">
           ${status('comms', 'robot', 'Robot')}${status('ds', 'ds', 'DS')}${status('fms', 'fms', 'FMS')}
-          <span class="sep"></span>${status('js0', 'pad', 'Driver')}${status('js1', 'pad', 'Operator')}
+          <span class="sep"></span>${status('js0', 'pad', 'Driver')}${cfg.operator ? status('js1', 'pad', 'Operator') : ''}
           <span class="sep"></span>${status('cam0', 'cam', esc(c.camView[0].label))}${status('cam1', 'cam', esc(c.camView[1].label))}
           <span class="sep"></span>${status('can', 'can', 'CAN')}
         </div>
@@ -509,7 +509,7 @@ const MatchView = (() => {
     renderFoot();
   }
 
-  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => [v.label, v.mount, v.x, v.y, v.a].join(':')).join() + '|' + api.S.log.fileName + '|' + !!c.mech.rack + '|' + api.S.field.w + 'x' + api.S.field.h;
+  const buildKey = c => c.key + '|' + JSON.stringify(Object.values(c.roles)) + '|' + c.camView.map(v => [v.label, v.mount, v.x, v.y, v.a].join(':')).join() + '|' + api.S.log.fileName + '|' + !!c.mech.rack + '|' + api.S.field.w + 'x' + api.S.field.h + '|' + cfg.operator;
 
   // ---------------- per-frame update ----------------
   const setLvl = (el, lvl) => { const cls = el.getAttribute('class').replace(/\blvl-\w+/g, '').trim() + ' lvl-' + lvl; if (el.getAttribute('class') !== cls) el.setAttribute('class', cls); };
@@ -554,7 +554,7 @@ const MatchView = (() => {
     icSet('ds', !dsE ? 'none' : dsOn ? 'ok' : 'major', !dsE ? '?' : dsOn ? 'OK' : 'Lost', 'Driver Station attached to the robot');
     icSet('fms', !fmsE ? 'none' : at(fmsE, t) === 1 ? 'ok' : 'none', !fmsE ? '?' : at(fmsE, t) === 1 ? 'OK' : 'Off', 'Field management system');
     const jsState = [];
-    for (const p of [0, 1]) {
+    for (const p of cfg.operator ? [0, 1] : [0]) { // no operator controller: port 1 isn't watched
       const ce = E(`DS/Joystick${p}/Connected`, `DriverStation/Joystick${p}/Connected`), ne = E(`DS/Joystick${p}/Name`);
       const on = at(ce, t) === 1, nm = strAt(ne, t);
       const lvl = !ce ? 'none' : on ? 'ok' : 'major';
@@ -847,7 +847,8 @@ const MatchView = (() => {
     const ci = tgt.dataset.cam ?? tgt.dataset.camleg;
     if (ci != null) {
       const cs = camS[+ci];
-      html = `<div class="tt">Camera ${+ci + 1} · ${esc(cs.label)}</div>` + (cs.c ? `<div class="row">Source<b>${esc(cs.c.name)}</b></div><div class="row">Status<b>${esc(cs.text)}</b></div>${isFinite(cs.lat) ? `<div class="row">Latency<b>${Math.round(cs.lat)} ms</b></div>` : ''}${isFinite(cs.fps) ? `<div class="row">FPS<b>${Math.round(cs.fps)}</b></div>` : ''}${cs.seen.length ? `<div class="row">Tags<b>${esc(cs.seen.map(g => (isFinite(g.id) ? Math.round(g.id) : '?') + (isFinite(g.d) ? ` (${g.d.toFixed(1)} m)` : '')).join(', '))}</b></div>` : ''}` : '<div>No camera data. Pick a source in Setup.</div>');
+      const simulated = api.S.isLive && api.liveInfo().simCams;
+      html = `<div class="tt">Camera ${+ci + 1} · ${esc(cs.label)}</div>` + (cs.c ? `<div class="row">Source<b>${esc(cs.c.name)}${simulated ? ' (simulated)' : ''}</b></div><div class="row">Status<b>${esc(cs.text)}</b></div>${isFinite(cs.lat) ? `<div class="row">Latency<b>${Math.round(cs.lat)} ms</b></div>` : ''}${isFinite(cs.fps) ? `<div class="row">FPS<b>${Math.round(cs.fps)}</b></div>` : ''}${cs.seen.length ? `<div class="row">Tags<b>${esc(cs.seen.map(g => (isFinite(g.id) ? Math.round(g.id) : '?') + (isFinite(g.d) ? ` (${g.d.toFixed(1)} m)` : '')).join(', '))}</b></div>` : ''}` : '<div>No camera data. Pick a source in Setup.</div>');
     } else {
       let id = tgt.dataset.slot || tgt.dataset.part;
       if (id === 'fw') id = ['fw1', 'fw2', 'fw3', 'fw4'].find(s => mstate[s].lvl !== 'none') || 'fw1';
@@ -893,7 +894,11 @@ const MatchView = (() => {
         <section><h3>Intake / hopper</h3>${SLOTS.intake.map(slotRow).join('')}${mechRow('rack', 'Hopper extension (rack)')}</section>
         <section><h3>Cameras</h3>${camCfg.map(camRow).join('')}
           <div class="mv-two">${num('camLatencyMs', 'Fault above (ms)')}${num('camMinFps', 'Fault below (FPS)')}</div>
+          <label class="chk"><input type="checkbox" data-cfg-b="simCams"${cfg.simCams ? ' checked' : ''}> Simulate the cameras when connected to robot code running in simulation (127.0.0.1): ignore its camera data and work out what each camera would see from the robot's pose (applies from the next connect)</label>
           <p class="hint">${c.cams.length ? `Found: ${c.cams.map(x => esc(x.name)).join(', ')}.` : 'No camera data yet. Log Vision/&lt;name&gt;/Connected and Vision/&lt;name&gt;/TagCount (robot-code/MatchTelemetry.java), or PhotonVision/Limelight tables are picked up on their own.'} Cameras that log Vision/&lt;name&gt;/RobotToCamera are placed from it, and TagYawDeg / TagDistanceM / TagIds draw the tags they see (logging-needed/match-view-logging.md).</p></section>
+        <section><h3>Controllers</h3>
+          <label class="chk"><input type="checkbox" data-cfg-b="operator"${cfg.operator ? ' checked' : ''}> Operator controller (USB port 1)</label>
+          <p class="hint">Turn off when one driver runs the robot, so port 1 being empty isn't shown as unplugged.</p></section>
         <section><h3>Window and match</h3>
           ${num('dsHeight', 'Leave for Driver Station (px)')}
           <label class="chk"><input type="checkbox" data-cfg-b="autoFit"${cfg.autoFit ? ' checked' : ''}> Fit the window above the Driver Station when match view opens</label>

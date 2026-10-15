@@ -154,7 +154,7 @@ DogLog writes everything under `/Robot/`; the app strips that prefix, so these a
 | `SystemStats/...` (DogLog extras + `DogLog.setPdh`) | Battery, total current, brownouts, PDH channels, CAN load |
 | `System/LoopTimeMs` | Loop overruns |
 | `DS:*` (DogLog `withCaptureDs`) / `FMSInfo/FMSControlData` (live) | Auto / teleop / disabled phases |
-| `DS/MatchTime`, `DS/Joystick<N>/Connected`, `DS/Joystick<N>/Name` | Match view: match timer, driver/operator controller icons (`robot-code/MatchTelemetry.java`) |
+| `DS/MatchTime`, `DS/Joystick<N>/Connected`, `DS/Joystick<N>/Name` | Match view: match timer, driver/operator controller icons (`robot-code/MatchTelemetry.java`; no operator controller → untick it in match view Setup) |
 | `Vision/<cam>/Connected, TagCount, LatencyMs, FPS, Faults/<flag>` | Match view cameras. PhotonVision (`photonvision/<cam>/...`) and Limelight (`limelight-<name>/tv, tl, hb`) tables also work |
 | `Drive/ModuleAngles` (`double[4]`, degrees, FL FR BL BR) | Optional: match view turns the swerve wheels |
 
@@ -199,4 +199,5 @@ python tools/fake_robot_nt.py 120
 ```
 
 Then in the app: Live → Simulation (127.0.0.1) → Connect. Robot simulation from WPILib (Simulate Robot
-Code) works the same way.
+Code) works the same way. Robot code in simulation has no cameras, so on 127.0.0.1 the app ignores any camera data it publishes
+and works out what each camera would see from the robot's pose instead (match view Setup → Cameras turns this off).

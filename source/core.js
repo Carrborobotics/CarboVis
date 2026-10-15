@@ -355,12 +355,12 @@ const Core = (() => {
         out.push({ name: stripPrefix(e.name), t: e.t, x: Float64Array.from(e.vals, a => a[0]), y: Float64Array.from(e.vals, a => a[1]), r: Float64Array.from(e.vals, a => a[2]) });
       }
     }
-    // the robot's main pose: our convention first, then common names from DogLog / CTRE swerve code
-    const PREF = ['Robot/Pose', 'Drive/Pose', 'Swerve/Pose', 'DriveState/Pose', 'Drive/EstimatedPose', 'Odometry/Robot'];
-    const rank = n => { const i = PREF.indexOf(n); return i < 0 ? (/pose$/i.test(n) && !/vision|target|camera|tag/i.test(n) ? 50 : 100) : i; };
-    out.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+    out.sort((a, b) => poseRank(a.name) - poseRank(b.name) || a.name.localeCompare(b.name));
     return out;
   }
+  // the robot's main pose: our convention first, then common names from DogLog / CTRE swerve code
+  const POSE_PREF = ['Robot/Pose', 'Drive/Pose', 'Swerve/Pose', 'DriveState/Pose', 'Drive/EstimatedPose', 'Odometry/Robot'];
+  const poseRank = n => { const i = POSE_PREF.indexOf(n); return i < 0 ? (/pose$/i.test(n) && !/vision|target|camera|tag/i.test(n) ? 50 : 100) : i; };
 
   function matchInfo(log) {
     const info = { event: '', match: '', alliance: '' };
@@ -762,6 +762,6 @@ const Core = (() => {
     };
   }
 
-  return { parseWpilog, Writer, analyze, summaryDoc, idxAt, valueAt, trueIntervals, findEntry, stripPrefix, motorsOf, mechanismsOf, posesOf, phasesOf, DEFAULT_LIMITS, parseSchema, makeLayout, faultInfo, FAULT_INFO, KEYS, classify, readPrim, parseMeta };
+  return { parseWpilog, Writer, analyze, summaryDoc, idxAt, valueAt, trueIntervals, findEntry, stripPrefix, motorsOf, mechanismsOf, posesOf, poseRank, phasesOf, DEFAULT_LIMITS, parseSchema, makeLayout, faultInfo, FAULT_INFO, KEYS, classify, readPrim, parseMeta };
 })();
 if (typeof module !== 'undefined') module.exports = Core;

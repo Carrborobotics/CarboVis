@@ -317,7 +317,69 @@ const FakeMatch = (() => {
   }
   const DEMOS = Object.keys(SCENARIOS).map(id => ({ id, label: SCENARIOS[id].label, fileName: demoName(id) }));
 
-  const api = { Client, HOST, SCENARIOS, DEMOS, upcoming, record, last: null };
+  // Robot code running in WPILib simulation has no cameras. Whatever it publishes for them (Vision/<cam>/...,
+  // photonvision/..., limelight...) is dropped, and what each camera would see from the simulated robot's pose is
+  // made up instead, on the same field layout as the simulated match. A camera's mount comes from the robot's own
+  // Vision/<cam>/RobotToCamera (kept, since it's config rather than a camera input), else from its name.
+  const CAM_TOPIC = /^(?:Vision\/([^/]+)\/|photonvision\/([^/]+)\/|(limelight(?:-[\w]+)?)\/)/;
+  const SIM_CAM_DT = 0.05;
+  class SimCameras {
+    constructor(emit) { this.emit = emit; this.names = new Set(); this.mounts = {}; this.pose = ''; this.poseRank = 101; this.firstUs = null; this.lastUs = -Infinity; }
+    // true when the value is a camera input to drop
+    drop(topic, value) {
+      const n = Core.stripPrefix(topic.name), r = n.match(CAM_TOPIC);
+      if (!r) return false;
+      const name = r[1] || r[2] || r[3];
+      this.names.add(name);
+      if (r[1] && /\/RobotToCamera$/.test(n)) {
+        const v = [...value].map(Number);
+        if (v.length >= 6) this.mounts[name] = v.slice(0, 6); else if (v.length === 3) this.mounts[name] = [v[0], v[1], 0, 0, 0, v[2]];
+        return false;
+      }
+      return true;
+    }
+    mount(name, i) {
+      if (this.mounts[name]) return this.mounts[name];
+      if (Sample.CAM_MOUNTS[name]) return Sample.CAM_MOUNTS[name];
+      const f = /front/i.test(name), b = /back|rear/i.test(name), l = /left/i.test(name), r = /right/i.test(name);
+      const x = f ? 0.27 : b ? -0.27 : 0, y = l ? 0.27 : r ? -0.27 : 0;
+      if (!x && !y) return i ? [-0.27, 0, 0.22, 0, -20, 180] : [0.27, 0, 0.22, 0, -20, 0];
+      return [x, y, 0.22, 0, -20, Math.atan2(y, x) * 180 / Math.PI];
+    }
+    // after every value is added to the log: keep track of the robot's main pose, and publish what the cameras see
+    // from it 20 times a second. Any value moves the clock on, since NT only sends a pose when it changes.
+    afterValue(topic, us, log) {
+      const e = log.entries.get(topic.name);
+      if (e && (e.kind === 'struct' ? e.structName === 'Pose2d' : e.kind === 'numarr' && /pose$/i.test(e.name))) {
+        const n = Core.stripPrefix(e.name), rank = Core.poseRank(n);
+        if (rank < this.poseRank) { this.pose = topic.name; this.poseRank = rank; }
+      }
+      const pe = this.pose && log.entries.get(this.pose);
+      const pose = !pe ? null : pe.kind === 'struct' ? (pe.undecoded || !pe.t.length ? null : ['translation/x', 'translation/y', 'rotation/value'].map(k => pe.fields[k][pe.fields[k].length - 1]))
+        : pe.vals.length && pe.vals[pe.vals.length - 1].length === 3 ? [...pe.vals[pe.vals.length - 1]] : null;
+      if (!pose) return;
+      if (this.firstUs == null) this.firstUs = us;
+      if (us - this.lastUs < SIM_CAM_DT * 1e6) return;
+      // give the robot a couple of seconds to name its cameras before falling back to the simulated match's two
+      let names = [...this.names];
+      if (!names.length) { if (us - this.firstUs < 2e6) return; names = Object.keys(Sample.CAM_MOUNTS); }
+      this.lastUs = us;
+      const pub = (name, type, value, unit) => this.emit({ name: '/Robot/' + name, type, properties: unit ? { unit, simulated: true } : { simulated: true } }, us, value);
+      names.forEach((name, i) => {
+        const seen = Sample.tagsSeen(pose[0], pose[1], pose[2], this.mount(name, i)), p = `Vision/${name}/`;
+        pub(p + 'Connected', 'boolean', true);
+        pub(p + 'TagCount', 'double', seen.length);
+        pub(p + 'TagIds', 'int[]', seen.map(g => g.id));
+        pub(p + 'TagYawDeg', 'double[]', seen.map(g => Math.round(g.yaw * 100) / 100), 'deg');
+        pub(p + 'TagDistanceM', 'double[]', seen.map(g => Math.round(g.dist * 1000) / 1000), 'm');
+        pub(p + 'LatencyMs', 'double', 25, 'ms');
+        pub(p + 'FPS', 'double', 30);
+      });
+    }
+  }
+  const isRobotSim = host => /^(127\.0\.0\.1|localhost|\[?::1\]?)$/i.test(String(host || '').trim());
+
+  const api = { Client, HOST, SCENARIOS, DEMOS, upcoming, record, SimCameras, isRobotSim, last: null };
   return api;
 })();
 if (typeof module !== 'undefined') module.exports = FakeMatch;

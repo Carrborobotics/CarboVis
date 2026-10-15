@@ -1394,7 +1394,15 @@
     log.serverNow = () => live && live.client ? live.client.serverNowUs() : null;
     const Client = isSim(host) ? FakeMatch.Client : NT4.Client; // the simulated match runs in the page, no robot needed
     const serverNow = () => (live && live.client ? live.client.serverNowUs() : null);
-    live.client = new Client({ host, onValue: (topic, us, value) => { Live.add(log, topic, us, value); Library.liveValue(topic, us, value, serverNow); },
+    const take = (topic, us, value) => { Live.add(log, topic, us, value); Library.liveValue(topic, us, value, serverNow); };
+    // robot code in simulation has no cameras: theirs are made up from its pose (and recorded like the rest)
+    const simCams = FakeMatch.isRobotSim(host) && store.get('7763.mv.cfg', {}).simCams !== false ? new FakeMatch.SimCameras(take) : null;
+    live.simCams = !!simCams;
+    live.client = new Client({ host, onValue: (topic, us, value) => {
+      if (simCams && simCams.drop(topic, value)) return;
+      take(topic, us, value);
+      if (simCams) simCams.afterValue(topic, us, log);
+    },
       onStatus: ({ state }) => { Library.liveStatus(state, host); setLiveIndicator(); if (!$('#livePanel').hidden) renderLivePanelSoon(); if (S.isLive) renderHeader(); } });
     live.client.connect();
     setLiveIndicator();
@@ -1525,7 +1533,7 @@
   const matchView = MatchView.init({
     S, h, fmt, Core, store, toast, setCursor,
     canLive: CAN_LIVE, presets: LIVE_PRESETS, liveHost: () => liveState.host,
-    liveInfo: () => (live && live.client ? { state: live.client.state, loaded: live.loaded && S.log === live.log, host: live.client.o.host, rttMs: live.client.rttMs, sim: isSim(live.client.o.host) } : { state: 'off', loaded: false, host: liveState.host }),
+    liveInfo: () => (live && live.client ? { state: live.client.state, loaded: live.loaded && S.log === live.log, host: live.client.o.host, rttMs: live.client.rttMs, sim: isSim(live.client.o.host), simCams: live.simCams } : { state: 'off', loaded: false, host: liveState.host }),
     matchMenu: fillMatchSel,
     simHost: FakeMatch.HOST, simUpcoming: () => (live && live.client && isSim(live.client.o.host) ? FakeMatch.upcoming(live.client) : []),
     startLive: host => { if (!host) return; liveState.host = host; store.set('7763.liveHost', host); startLive(host); },
